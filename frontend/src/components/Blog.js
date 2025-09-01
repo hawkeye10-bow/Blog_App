@@ -13,6 +13,8 @@ import {
     Grid
   } from '@mui/material';
 import BlogInteractions from './BlogInteractions';
+import LiveBlogStats from './RealTime/LiveBlogStats';
+import { useRealTimeBlogView } from '../hooks/useRealTimeFeatures';
   import { styled } from '@mui/material/styles';
   import { 
     red, 
@@ -251,6 +253,7 @@ import BlogInteractions from './BlogInteractions';
   
   const Blog = ({ title, description, imageURL, userName, isUser, id, imageFitMode = 'contain', authorId, likes = [], comments = [], likeCount = 0, commentCount = 0 }) => {
     const navigate = useNavigate();
+    const { currentViewers, liveStats, trackEngagement } = useRealTimeBlogView(id);
     
     const handleEdit = () => {
       navigate(`/myblogs/${id}`);
@@ -444,6 +447,16 @@ import BlogInteractions from './BlogInteractions';
             initialComments={comments}
             allowComments={true}
           />
+
+          {/* Live Blog Statistics */}
+          <Box px={4} pb={4}>
+            <LiveBlogStats 
+              blogId={id}
+              compact={true}
+              showViewers={true}
+              showActivity={false}
+            />
+          </Box>
         </StyledCard>
       </Container>
     );

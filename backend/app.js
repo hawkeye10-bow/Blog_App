@@ -9,6 +9,7 @@ import pollRouter from "./routes/poll-routes.js";
 import mediaRouter from "./routes/media-routes.js";
 import analyticsRouter from "./routes/analytics-routes.js";
 import chatRouter from "./routes/chat-routes.js";
+import realtimeRouter from "./routes/realtime-routes.js";
 import cors from 'cors';
 
 const app = express();
@@ -43,6 +44,7 @@ app.use("/api/poll", pollRouter);
 app.use("/api/media", mediaRouter);
 app.use("/api/analytics", analyticsRouter);
 app.use("/api/chat", chatRouter);
+app.use("/api/realtime", realtimeRouter);
 
 // Socket.io connection handling
 io.on('connection', (socket) => {

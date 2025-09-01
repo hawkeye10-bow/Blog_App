@@ -32,6 +32,8 @@ import socketService from '../services/socketService';
 import Swal from 'sweetalert2';
 import RichTextEditor from './RichTextEditor';
 import CategorySelector from './CategorySelector';
+import CollaborativeEditor from './RealTime/CollaborativeEditor';
+import { useRealTimeFeatures } from '../hooks/useRealTimeFeatures';
 
 // Styled Components
 const AddBlogContainer = styled(Container)(({ theme }) => ({
@@ -169,6 +171,7 @@ const CharacterCount = styled(Typography)(({ theme }) => ({
 const AddBlog = () => {
   const navigate = useNavigate();
   const user = useSelector(state => state.user);
+  const { startTyping, stopTyping, trackEngagement } = useRealTimeFeatures();
   const [input, setInput] = useState({
     title: "",
     description: "",
@@ -188,6 +191,7 @@ const AddBlog = () => {
   const [showPreview, setShowPreview] = useState(false);
   const [imageValid, setImageValid] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [useCollaborativeEditor, setUseCollaborativeEditor] = useState(false);
 
   const { handleInputChange, cleanup } = useTypingIndicator('creating');
 
@@ -239,6 +243,9 @@ const AddBlog = () => {
       ...prevState,
       [e.target.name]: e.target.value
     }));
+    
+    // Start typing indicator
+    startTyping('creating');
     
     // Clear messages when user starts typing
     if (error) setError("");
@@ -302,6 +309,13 @@ const AddBlog = () => {
       const data = await sendRequest();
       setProgress(100);
       setSuccess("Blog created successfully! Redirecting...");
+      
+      // Track engagement
+      trackEngagement('create', null, {
+        title: input.title,
+        category: input.category,
+        contentLength: input.content.length
+      });
       
       // Show success notification
       Swal.fire({
@@ -466,14 +480,31 @@ const AddBlog = () => {
                   <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
                     <DescriptionIcon color="primary" />
                     Blog Content
+                    <Button
+                      size="small"
+                      onClick={() => setUseCollaborativeEditor(!useCollaborativeEditor)}
+                      variant="outlined"
+                      sx={{ ml: 2 }}
+                    >
+                      {useCollaborativeEditor ? 'Simple Editor' : 'Collaborative Editor'}
+                    </Button>
                   </Typography>
-                  <RichTextEditor
-                    value={input.content}
-                    onChange={(e) => setInput(prev => ({ ...prev, content: e.target.value }))}
-                    placeholder="Write your full blog content here..."
-                    minHeight={400}
-                    showPreview={true}
-                  />
+                  {useCollaborativeEditor ? (
+                    <CollaborativeEditor
+                      blogId={null} // New blog, no ID yet
+                      initialContent={input.content}
+                      onContentChange={(content) => setInput(prev => ({ ...prev, content }))}
+                      readOnly={false}
+                    />
+                  ) : (
+                    <RichTextEditor
+                      value={input.content}
+                      onChange={(e) => setInput(prev => ({ ...prev, content: e.target.value }))}
+                      placeholder="Write your full blog content here..."
+                      minHeight={400}
+                      showPreview={true}
+                    />
+                  )}
                 </Box>
               </Grid>
 

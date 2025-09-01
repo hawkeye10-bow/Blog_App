@@ -27,6 +27,9 @@ import {
 import { useRealTimeBlogs } from '../hooks/useRealTimeBlogs';
 import SearchBar from './SearchBar';
 import RealTimeIndicator from './RealTimeIndicator';
+import LiveContentFeed from './RealTime/LiveContentFeed';
+import LiveTypingIndicators from './RealTime/LiveTypingIndicators';
+import LiveNotifications from './RealTime/LiveNotifications';
 import socketService from '../services/socketService';
 import axios from 'axios';
 import { serverURL } from '../helper/Helper';
@@ -369,26 +372,10 @@ const Blogs = () => {
       </Box>
 
       {/* Typing Indicators */}
-      {typingUsers.size > 0 && (
-        <Box position="fixed" bottom={20} left={20} zIndex={1000}>
-          {Array.from(typingUsers.values()).map((typingUser, index) => (
-            <Fade in={true} key={`${typingUser.userName}-${typingUser.timestamp}`}>
-              <Chip
-                label={`${typingUser.userName} is ${typingUser.action}...`}
-                color="primary"
-                variant="outlined"
-                sx={{ 
-                  mb: 1, 
-                  display: 'block',
-                  animation: 'pulse 2s ease-in-out infinite',
-                  backgroundColor: 'rgba(255, 255, 255, 0.9)',
-                  backdropFilter: 'blur(10px)',
-                }}
-              />
-            </Fade>
-          ))}
-        </Box>
-      )}
+      <LiveTypingIndicators showGlobal={true} />
+      
+      {/* Live Notifications */}
+      <LiveNotifications maxVisible={3} autoHide={true} />
     </BlogsContainer>
   );
 };
