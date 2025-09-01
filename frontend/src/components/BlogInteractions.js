@@ -42,6 +42,8 @@ import {
 import { useSelector } from 'react-redux';
 import apiService from '../services/apiService';
 import socketService from '../services/socketService';
+import LiveComments from './RealTime/LiveComments';
+import { useRealTimeFeatures } from '../hooks/useRealTimeFeatures';
 import { formatDistanceToNow } from 'date-fns';
 
 const InteractionBar = styled(Box)(({ theme }) => ({
@@ -81,6 +83,7 @@ const CommentItem = styled(Box)(({ theme }) => ({
 
 const BlogInteractions = ({ blogId, authorId, initialLikes = [], initialComments = [], allowComments = true }) => {
   const user = useSelector(state => state.user);
+  const { trackEngagement } = useRealTimeFeatures(blogId);
   const [likes, setLikes] = useState(initialLikes);
   const [comments, setComments] = useState(initialComments);
   const [isLiked, setIsLiked] = useState(false);
@@ -202,6 +205,9 @@ const BlogInteractions = ({ blogId, authorId, initialLikes = [], initialComments
           ? [...prev, { user: user._id, createdAt: new Date() }]
           : prev.filter(like => like.user !== user._id)
       );
+      
+      // Track engagement
+      trackEngagement(response.data.isLiked ? 'like' : 'unlike', blogId);
     } catch (err) {
       console.error('❌ Error toggling like:', err);
     }
@@ -221,6 +227,9 @@ const BlogInteractions = ({ blogId, authorId, initialLikes = [], initialComments
       
       console.log('🔖 Bookmark response:', response.data);
       setIsBookmarked(response.data.isBookmarked);
+      
+      // Track engagement
+      trackEngagement('bookmark', blogId);
     } catch (err) {
       console.error('❌ Error toggling bookmark:', err);
     }
@@ -243,6 +252,12 @@ const BlogInteractions = ({ blogId, authorId, initialLikes = [], initialComments
       setComments(prev => [...prev, response.data.comment]);
       setNewComment('');
       setReplyTo(null);
+      
+      // Track engagement
+      trackEngagement('comment', blogId, {
+        commentLength: newComment.length,
+        isReply: !!replyTo
+      });
     } catch (err) {
       console.error('❌ Error adding comment:', err);
     } finally {
@@ -289,6 +304,9 @@ const BlogInteractions = ({ blogId, authorId, initialLikes = [], initialComments
       }
       
       setShareMenuAnchor(null);
+      
+      // Track engagement
+      trackEngagement('share', blogId, { platform });
     } catch (err) {
       console.error('❌ Error sharing blog:', err);
     }
@@ -362,117 +380,12 @@ const BlogInteractions = ({ blogId, authorId, initialLikes = [], initialComments
       </InteractionBar>
 
       {/* Comments Section */}
-      <Collapse in={showComments}>
-        <CommentSection>
-          <Typography variant="h6" fontWeight={700} mb={3}>
-            Comments ({comments.length})
-          </Typography>
-
-          {/* Add Comment */}
-          {allowComments && user && (
-            <Box mb={3}>
-              <Box display="flex" gap={2} mb={2}>
-                <Avatar src={user.profile?.profilePicture}>
-                  {user.name.charAt(0).toUpperCase()}
-                </Avatar>
-                <TextField
-                  fullWidth
-                  multiline
-                  rows={3}
-                  placeholder={replyTo ? "Write a reply..." : "Write a comment..."}
-                  value={newComment}
-                  onChange={(e) => setNewComment(e.target.value)}
-                  variant="outlined"
-                  sx={{
-                    '& .MuiOutlinedInput-root': {
-                      borderRadius: 2,
-                    },
-                  }}
-                />
-              </Box>
-              <Box display="flex" justifyContent="space-between" alignItems="center">
-                {replyTo && (
-                  <Chip
-                    label={`Replying to ${replyTo.user.name}`}
-                    onDelete={() => setReplyTo(null)}
-                    size="small"
-                    color="primary"
-                    variant="outlined"
-                  />
-                )}
-                <Box sx={{ flexGrow: 1 }} />
-                <Button
-                  variant="contained"
-                  onClick={handleAddComment}
-                  disabled={!newComment.trim() || submittingComment}
-                  startIcon={<SendIcon />}
-                  sx={{
-                    background: 'linear-gradient(135deg, #667eea, #764ba2)',
-                    '&:hover': {
-                      background: 'linear-gradient(135deg, #5a6fd8, #6a4190)',
-                    },
-                  }}
-                >
-                  {submittingComment ? 'Posting...' : 'Post Comment'}
-                </Button>
-              </Box>
-            </Box>
-          )}
-
-          {/* Comments List */}
-          {comments.filter(c => !c.isDeleted).map((comment) => (
-            <CommentItem key={comment._id}>
-              <Box display="flex" gap={2}>
-                <Avatar src={comment.user?.profile?.profilePicture}>
-                  {comment.user?.name?.charAt(0).toUpperCase()}
-                </Avatar>
-                <Box flex={1}>
-                  <Box display="flex" alignItems="center" gap={1} mb={1}>
-                    <Typography variant="subtitle2" fontWeight={600}>
-                      {comment.user?.name}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {formatCommentTime(comment.createdAt)}
-                    </Typography>
-                    {comment.isEdited && (
-                      <Chip label="edited" size="small" variant="outlined" />
-                    )}
-                  </Box>
-                  <Typography variant="body2" mb={2}>
-                    {comment.content}
-                  </Typography>
-                  <Box display="flex" alignItems="center" gap={2}>
-                    <Button
-                      size="small"
-                      startIcon={<LikeIcon />}
-                      sx={{ fontSize: '0.8rem' }}
-                    >
-                      {comment.likes?.length || 0}
-                    </Button>
-                    <Button
-                      size="small"
-                      startIcon={<ReplyIcon />}
-                      onClick={() => setReplyTo(comment)}
-                      sx={{ fontSize: '0.8rem' }}
-                    >
-                      Reply
-                    </Button>
-                  </Box>
-                </Box>
-              </Box>
-            </CommentItem>
-          ))}
-
-          {comments.length === 0 && (
-            <Box textAlign="center" py={4}>
-              <CommentIcon sx={{ fontSize: 48, color: 'text.secondary', mb: 2 }} />
-              <Typography color="text.secondary">
-                No comments yet. Be the first to comment!
-              </Typography>
-            </Box>
-          )}
-        </CommentSection>
-      </Collapse>
+      {showComments && (
+        <LiveComments 
+          blogId={blogId}
+          allowComments={allowComments}
+        />
+      )}
 
       {/* Share Menu */}
       <Menu

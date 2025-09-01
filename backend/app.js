@@ -1,220 +1,413 @@
-import express from "express";
-import mongoose from "mongoose";
-import { createServer } from "http";
-import { Server } from "socket.io";
-import router from "./routes/user-routes.js";
-import blogRouter from "./routes/blog-routes.js";
-import categoryRouter from "./routes/category-routes.js";
-import pollRouter from "./routes/poll-routes.js";
-import mediaRouter from "./routes/media-routes.js";
-import analyticsRouter from "./routes/analytics-routes.js";
-import chatRouter from "./routes/chat-routes.js";
-import realtimeRouter from "./routes/realtime-routes.js";
-import cors from 'cors';
+import React, { useState, useEffect } from 'react';
+import {
+  Container,
+  Grid,
+  Paper,
+  Typography,
+  Box,
+  Card,
+  CardContent,
+  Avatar,
+  Chip,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  LinearProgress,
+  IconButton,
+  Button,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  TextField,
+  Alert
+} from '@mui/material';
+import { styled } from '@mui/material/styles';
+import {
+  TrendingUp as TrendingIcon,
+  People as PeopleIcon,
+  Article as ArticleIcon,
+  Visibility as ViewIcon,
+  Favorite as LikeIcon,
+  Comment as CommentIcon,
+  Share as ShareIcon,
+  Edit as EditIcon,
+  Delete as DeleteIcon,
+  Add as AddIcon,
+  AdminPanelSettings as AdminIcon
+} from '@mui/icons-material';
+import { useSelector } from 'react-redux';
+import axios from 'axios';
+import { serverURL } from '../helper/Helper';
+import { Line, Bar, Doughnut } from 'react-chartjs-2';
+import LiveBlogStats from './RealTime/LiveBlogStats';
+import LiveContentFeed from './RealTime/LiveContentFeed';
+import { useRealTimeFeatures } from '../hooks/useRealTimeFeatures';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+  ArcElement
+} from 'chart.js';
 
-const app = express();
-const server = createServer(app);
-const io = new Server(server, {
-  cors: {
-    origin: ["http://localhost:3000", "http://localhost:5173"],
-    methods: ["GET", "POST", "PUT", "DELETE"],
-    credentials: true
-  }
-});
+// Register Chart.js components
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+  ArcElement
+);
 
-// Middleware
-app.use(cors({
-  origin: ["http://localhost:3000", "http://localhost:5173"],
-  credentials: true
+const DashboardContainer = styled(Container)(({ theme }) => ({
+  padding: theme.spacing(4, 2),
+  minHeight: 'calc(100vh - 80px)',
+  background: 'linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%)',
 }));
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Make io accessible to routes
-app.use((req, res, next) => {
-  req.io = io;
-  next();
-});
+const StatsCard = styled(Card)(({ theme }) => ({
+  background: 'rgba(255, 255, 255, 0.95)',
+  backdropFilter: 'blur(20px)',
+  borderRadius: theme.spacing(3),
+  boxShadow: '0 8px 32px rgba(0,0,0,0.1)',
+  border: '1px solid rgba(255, 255, 255, 0.3)',
+  transition: 'all 0.3s ease',
+  '&:hover': {
+    transform: 'translateY(-4px)',
+    boxShadow: '0 16px 40px rgba(0,0,0,0.15)',
+  },
+}));
 
-// Routes
-app.use("/api/user", router);
-app.use("/api/blog", blogRouter);
-app.use("/api/category", categoryRouter);
-app.use("/api/poll", pollRouter);
-app.use("/api/media", mediaRouter);
-app.use("/api/analytics", analyticsRouter);
-app.use("/api/chat", chatRouter);
-app.use("/api/realtime", realtimeRouter);
+const ChartCard = styled(Paper)(({ theme }) => ({
+  background: 'rgba(255, 255, 255, 0.95)',
+  backdropFilter: 'blur(20px)',
+  borderRadius: theme.spacing(3),
+  padding: theme.spacing(3),
+  boxShadow: '0 8px 32px rgba(0,0,0,0.1)',
+  border: '1px solid rgba(255, 255, 255, 0.3)',
+}));
 
-// Socket.io connection handling
-io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
-  
-  // Join user to their personal room for notifications
-  socket.on('join-user-room', (userId) => {
-    socket.join(`user-${userId}`);
-    console.log(`User ${userId} joined their room`);
-  });
-  
-  // Join blogs room for real-time blog updates
-  socket.on('join-blogs-room', () => {
-    socket.join('blogs-room');
-    console.log('User joined blogs room');
-  });
-  
-  // Join category room for real-time category updates
-  socket.on('join-categories-room', () => {
-    socket.join('categories-room');
-    console.log('User joined categories room');
-  });
-  
-  // Join chat room for real-time messaging
-  socket.on('join-chat-room', (chatId) => {
-    socket.join(`chat-${chatId}`);
-    console.log(`User joined chat room ${chatId}`);
-  });
-  
-  // Leave chat room
-  socket.on('leave-chat-room', (chatId) => {
-    socket.leave(`chat-${chatId}`);
-    console.log(`User left chat room ${chatId}`);
-  });
-  
-  // Handle real-time collaboration
-  socket.on('join-blog-collaboration', (blogId) => {
-    socket.join(`blog-${blogId}`);
-    console.log(`User joined collaboration room for blog ${blogId}`);
-  });
-  
-  socket.on('blog-content-change', (data) => {
-    socket.to(`blog-${data.blogId}`).emit('blog-content-updated', {
-      blogId: data.blogId,
-      content: data.content,
-      user: data.user,
-      timestamp: new Date()
-    });
-  });
-  
-  // Handle live comments
-  socket.on('comment-typing', (data) => {
-    socket.to('blogs-room').emit('user-commenting', {
-      blogId: data.blogId,
-      userId: data.userId,
-      userName: data.userName
-    });
-  });
-  
-  socket.on('comment-stopped-typing', (data) => {
-    socket.to('blogs-room').emit('user-stopped-commenting', {
-      blogId: data.blogId,
-      userId: data.userId
-    });
-  });
-  
-  // Handle chat typing indicators
-  socket.on('chat-typing', (data) => {
-    socket.to(`chat-${data.chatId}`).emit('user-typing-chat', {
-      chatId: data.chatId,
-      userId: data.userId,
-      userName: data.userName
-    });
-  });
-  
-  socket.on('chat-stopped-typing', (data) => {
-    socket.to(`chat-${data.chatId}`).emit('user-stopped-typing-chat', {
-      chatId: data.chatId,
-      userId: data.userId
-    });
-  });
-  
-  // Handle user typing in blog creation/editing
-  socket.on('user-typing', (data) => {
-    socket.to('blogs-room').emit('user-typing', {
-      userId: data.userId,
-      userName: data.userName,
-      action: data.action // 'creating' or 'editing'
-    });
-  });
-  
-  // Handle user stopped typing
-  socket.on('user-stopped-typing', (data) => {
-    socket.to('blogs-room').emit('user-stopped-typing', {
-      userId: data.userId
-    });
-  });
-  
-  // Handle user online status
-  socket.on('user-online', (userId) => {
-    socket.join(`user-${userId}`);
-    socket.broadcast.emit('user-status-changed', {
-      userId,
-      isOnline: true
-    });
-  });
-  
-  socket.on('user-offline', (userId) => {
-    socket.broadcast.emit('user-status-changed', {
-      userId,
-      isOnline: false
-    });
-  });
-  
-  socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
-  });
-});
+const Dashboard = () => {
+  const user = useSelector(state => state.user);
+  const { realTimeData, isConnected } = useRealTimeFeatures();
+  const [stats, setStats] = useState(null);
+  const [blogStats, setBlogStats] = useState(null);
+  const [userStats, setUserStats] = useState(null);
+  const [onlineUsers, setOnlineUsers] = useState([]);
+  const [recentBlogs, setRecentBlogs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-// Database connection with better error handling
-const connectDB = async () => {
-  try {
-    await mongoose.connect("mongodb+srv://sandeepdara44:1234567890@cluster0.5z3d3z6.mongodb.net/blogapp?retryWrites=true&w=majority&appName=Cluster0", {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
-    console.log("✅ Database connected successfully");
-  } catch (error) {
-    console.error("❌ Database connection failed:", error);
-    process.exit(1);
+  useEffect(() => {
+    if (user && ['admin', 'author'].includes(user.role)) {
+      fetchDashboardData();
+    }
+  }, [user]);
+
+  const fetchDashboardData = async () => {
+    try {
+      setLoading(true);
+      
+      const requests = [
+        axios.get(`${serverURL}/api/blog/stats`),
+        axios.get(`${serverURL}/api/user/stats/${user._id}`),
+        axios.get(`${serverURL}/api/user/online`),
+        axios.get(`${serverURL}/api/blog?limit=5&sortBy=createdAt&sortOrder=desc`)
+      ];
+
+      if (user.role === 'admin') {
+        requests.push(axios.get(`${serverURL}/api/user?limit=10`));
+      }
+
+      const responses = await Promise.all(requests);
+      
+      setStats(responses[0].data.stats);
+      setUserStats(responses[1].data.stats);
+      setOnlineUsers(responses[2].data.onlineUsers);
+      setRecentBlogs(responses[3].data.blogs);
+      
+    } catch (err) {
+      console.error('Error fetching dashboard data:', err);
+      setError('Failed to load dashboard data');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const formatNumber = (num) => {
+    if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+    if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+    return num.toString();
+  };
+
+  const chartOptions = {
+    responsive: true,
+    plugins: {
+      legend: {
+        position: 'top',
+      },
+      title: {
+        display: false,
+      },
+    },
+    scales: {
+      y: {
+        beginAtZero: true,
+      },
+    },
+  };
+
+  if (!user || !['admin', 'author'].includes(user.role)) {
+    return (
+      <DashboardContainer>
+        <Alert severity="error">
+          Access denied. Only authors and admins can access the dashboard.
+        </Alert>
+      </DashboardContainer>
+    );
   }
+
+  if (loading) {
+    return (
+      <DashboardContainer>
+        <Box display="flex" justifyContent="center" alignItems="center" minHeight="60vh">
+          <LinearProgress sx={{ width: '300px' }} />
+        </Box>
+      </DashboardContainer>
+    );
+  }
+
+  return (
+    <DashboardContainer maxWidth="xl">
+      {/* Header */}
+      <Box mb={4}>
+        <Typography variant="h3" fontWeight={700} color="primary" mb={1}>
+          {user.role === 'admin' ? 'Admin Dashboard' : 'Author Dashboard'}
+        </Typography>
+        <Typography variant="h6" color="text.secondary">
+          Welcome back, {user.name}! Here's your content overview.
+        </Typography>
+      </Box>
+
+      {error && (
+        <Alert severity="error" sx={{ mb: 4 }}>
+          {error}
+        </Alert>
+      )}
+
+      {/* Stats Overview */}
+      <Grid container spacing={3} mb={4}>
+        <Grid item xs={12} sm={6} md={3}>
+          <StatsCard>
+            <CardContent>
+              <Box display="flex" alignItems="center" justifyContent="space-between">
+                <Box>
+                  <Typography color="text.secondary" gutterBottom>
+                    Total Blogs
+                  </Typography>
+                  <Typography variant="h4" fontWeight={700}>
+                    {formatNumber(userStats?.totalBlogs || 0)}
+                  </Typography>
+                </Box>
+                <Avatar sx={{ backgroundColor: '#667eea' }}>
+                  <ArticleIcon />
+                </Avatar>
+              </Box>
+            </CardContent>
+          </StatsCard>
+        </Grid>
+
+        <Grid item xs={12} sm={6} md={3}>
+          <StatsCard>
+            <CardContent>
+              <Box display="flex" alignItems="center" justifyContent="space-between">
+                <Box>
+                  <Typography color="text.secondary" gutterBottom>
+                    Total Views
+                  </Typography>
+                  <Typography variant="h4" fontWeight={700}>
+                    {formatNumber(userStats?.totalViews || 0)}
+                  </Typography>
+                </Box>
+                <Avatar sx={{ backgroundColor: '#10b981' }}>
+                  <ViewIcon />
+                </Avatar>
+              </Box>
+            </CardContent>
+          </StatsCard>
+        </Grid>
+
+        <Grid item xs={12} sm={6} md={3}>
+          <StatsCard>
+            <CardContent>
+              <Box display="flex" alignItems="center" justifyContent="space-between">
+                <Box>
+                  <Typography color="text.secondary" gutterBottom>
+                    Total Likes
+                  </Typography>
+                  <Typography variant="h4" fontWeight={700}>
+                    {formatNumber(userStats?.totalLikes || 0)}
+                  </Typography>
+                </Box>
+                <Avatar sx={{ backgroundColor: '#ef4444' }}>
+                  <LikeIcon />
+                </Avatar>
+              </Box>
+            </CardContent>
+          </StatsCard>
+        </Grid>
+
+        <Grid item xs={12} sm={6} md={3}>
+          <StatsCard>
+            <CardContent>
+              <Box display="flex" alignItems="center" justifyContent="space-between">
+                <Box>
+                  <Typography color="text.secondary" gutterBottom>
+                    Engagement Rate
+                  </Typography>
+                  <Typography variant="h4" fontWeight={700}>
+                    {userStats?.engagementRate || 0}%
+                  </Typography>
+                </Box>
+                <Avatar sx={{ backgroundColor: '#f59e0b' }}>
+                  <TrendingIcon />
+                </Avatar>
+              </Box>
+            </CardContent>
+          </StatsCard>
+        </Grid>
+      </Grid>
+
+      {/* Charts and Analytics */}
+      <Grid container spacing={3} mb={4}>
+        <Grid item xs={12} md={6}>
+          <ChartCard>
+            <Typography variant="h6" fontWeight={700} mb={3}>
+              Blog Performance Over Time
+            </Typography>
+            {/* Chart implementation would go here */}
+            <Box height={300} display="flex" alignItems="center" justifyContent="center">
+              <Typography color="text.secondary">
+                Chart visualization coming soon...
+              </Typography>
+            </Box>
+          </ChartCard>
+        </Grid>
+
+        <Grid item xs={12} md={6}>
+          <ChartCard>
+            <Typography variant="h6" fontWeight={700} mb={3}>
+              Real-Time Activity
+            </Typography>
+            <Box height={300} overflow="auto">
+              {realTimeData.recentActivity.length > 0 ? (
+                realTimeData.recentActivity.slice(0, 10).map((activity, index) => (
+                  <Box key={index} display="flex" alignItems="center" gap={2} mb={2}>
+                    <Avatar sx={{ width: 32, height: 32 }}>
+                      {activity.user?.name?.charAt(0) || '?'}
+                    </Avatar>
+                    <Box>
+                      <Typography variant="body2">
+                        {activity.user?.name || 'Someone'} {activity.type}d a blog
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {formatDistanceToNow(new Date(activity.timestamp), { addSuffix: true })}
+                      </Typography>
+                    </Box>
+                  </Box>
+                ))
+              ) : (
+                <Typography color="text.secondary" textAlign="center" mt={4}>
+                  No recent activity
+                </Typography>
+              )}
+            </Box>
+          </ChartCard>
+        </Grid>
+      </Grid>
+
+      {/* Recent Activity and Online Users */}
+      <Grid container spacing={3}>
+        <Grid item xs={12} md={8}>
+                        <IconButton size="small" color="error">
+                          <DeleteIcon />
+                        </IconButton>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </ChartCard>
+        </Grid>
+
+        <Grid item xs={12} md={4}>
+          <ChartCard>
+            <Typography variant="h6" fontWeight={700} mb={3}>
+              Online Users ({onlineUsers.length})
+            </Typography>
+            <Box maxHeight={300} overflow="auto">
+              {onlineUsers.map((onlineUser) => (
+                <Box
+                  key={onlineUser._id}
+                  display="flex"
+                  alignItems="center"
+                  gap={2}
+                  p={1}
+                  borderRadius={2}
+                  sx={{
+                    '&:hover': {
+                      backgroundColor: 'rgba(102, 126, 234, 0.05)',
+                    },
+                  }}
+                >
+                  <Avatar
+                    src={onlineUser.profile?.profilePicture}
+                    sx={{ width: 32, height: 32 }}
+                  >
+                    {onlineUser.name.charAt(0).toUpperCase()}
+                  </Avatar>
+                  <Box flex={1}>
+                    <Typography variant="body2" fontWeight={600}>
+                      {onlineUser.name}
+                    </Typography>
+                    <Chip
+                      label={onlineUser.role}
+                      size="small"
+                      color="primary"
+                      variant="outlined"
+                      sx={{ fontSize: '0.7rem', height: '20px' }}
+                    />
+                  </Box>
+                  <Box
+                    sx={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: '50%',
+                      backgroundColor: '#10b981',
+                    }}
+                  />
+                </Box>
+              ))}
+            </Box>
+          </ChartCard>
+        </Grid>
+      </Grid>
+    </DashboardContainer>
+  );
 };
 
-// Start server
-const startServer = async () => {
-  await connectDB();
-  const PORT = process.env.PORT || 5000;
-  server.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`📡 Socket.io server ready for real-time connections`);
-  });
-};
-
-startServer();
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully');
-  server.close(() => {
-    mongoose.connection.close();
-    process.exit(0);
-  });
-});
-
-// Default route
-app.get('/', (req, res) => {
-  res.json({ 
-    message: 'BLOGGY API Server',
-    status: 'Running',
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Global error handler
-app.use((error, req, res, next) => {
-  console.error('Global error:', error);
-  res.status(500).json({
-    message: 'Internal server error',
-    error: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong'
-  });
-});
-
-export { io };
+export default Dashboard;

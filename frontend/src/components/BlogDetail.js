@@ -38,6 +38,8 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import { useTypingIndicator } from '../hooks/useTypingIndicator';
 import socketService from '../services/socketService';
+import CollaborativeEditor from './RealTime/CollaborativeEditor';
+import { useRealTimeFeatures } from '../hooks/useRealTimeFeatures';
 import Swal from 'sweetalert2';
 import { serverURL } from '../helper/Helper';
 
@@ -158,6 +160,7 @@ const BlogDetail = () => {
   const navigate = useNavigate();
   const { id } = useParams();
   const currentUser = useSelector(state => state.user);
+  const { startTyping, stopTyping, trackEngagement } = useRealTimeFeatures(id);
   const [input, setInput] = useState({
     title: '',
     description: '',
@@ -170,6 +173,7 @@ const BlogDetail = () => {
   const [showPreview, setShowPreview] = useState(false);
   const [imageValid, setImageValid] = useState(true);
   const [progress, setProgress] = useState(0);
+  const [useCollaborativeEditor, setUseCollaborativeEditor] = useState(false);
 
   const { handleInputChange, cleanup } = useTypingIndicator('editing');
 
@@ -196,6 +200,10 @@ const BlogDetail = () => {
       ...prevState,
       [e.target.name]: e.target.value,
     }));
+    
+    // Start typing indicator
+    startTyping('editing');
+    
     if (error) setError("");
   });
 
@@ -301,6 +309,15 @@ const BlogDetail = () => {
     try {
       await sendRequest();
       setProgress(100);
+      
+      // Track engagement
+      trackEngagement('edit', id, {
+        changes: {
+          title: input.title !== blog?.title,
+          description: input.description !== blog?.description,
+          image: input.image !== blog?.image
+        }
+      });
       
       Swal.fire({
         icon: 'success',
@@ -549,30 +566,53 @@ const BlogDetail = () => {
                       <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
                         <DescriptionIcon color="primary" />
                         Blog Content
+                        <Button
+                          size="small"
+                          onClick={() => setUseCollaborativeEditor(!useCollaborativeEditor)}
+                          variant="outlined"
+                          sx={{ ml: 2 }}
+                        >
+                          {useCollaborativeEditor ? 'Simple Editor' : 'Collaborative Editor'}
+                        </Button>
                       </Typography>
-                      <StyledTextField
-                        name="description"
-                        onChange={handleChange}
-                        value={input.description}
-                        placeholder="Write your blog content here..."
-                        fullWidth
-                        required
-                        multiline
-                        rows={8}
-                        error={descriptionCharCount > maxDescriptionLength}
-                        InputProps={{
-                          startAdornment: (
-                            <InputAdornment position="start" sx={{ alignSelf: 'flex-start', mt: 1 }}>
-                              <DescriptionIcon color="action" />
-                            </InputAdornment>
-                          ),
-                        }}
-                      />
-                      <CharacterCount 
-                        color={descriptionCharCount > maxDescriptionLength ? 'error' : 'textSecondary'}
-                      >
-                        {descriptionCharCount}/{maxDescriptionLength} characters
-                      </CharacterCount>
+                      {useCollaborativeEditor ? (
+                        <CollaborativeEditor
+                          blogId={id}
+                          initialContent={input.description}
+                          onContentChange={(content) => setInput(prev => ({ ...prev, description: content }))}
+                          onSave={async (content) => {
+                            setInput(prev => ({ ...prev, description: content }));
+                            await sendRequest();
+                          }}
+                          readOnly={false}
+                        />
+                      ) : (
+                        <>
+                          <StyledTextField
+                            name="description"
+                            onChange={handleChange}
+                            value={input.description}
+                            placeholder="Write your blog content here..."
+                            fullWidth
+                            required
+                            multiline
+                            rows={8}
+                            error={descriptionCharCount > maxDescriptionLength}
+                            InputProps={{
+                              startAdornment: (
+                                <InputAdornment position="start" sx={{ alignSelf: 'flex-start', mt: 1 }}>
+                                  <DescriptionIcon color="action" />
+                                </InputAdornment>
+                              ),
+                            }}
+                          />
+                          <CharacterCount 
+                            color={descriptionCharCount > maxDescriptionLength ? 'error' : 'textSecondary'}
+                          >
+                            {descriptionCharCount}/{maxDescriptionLength} characters
+                          </CharacterCount>
+                        </>
+                      )}
                     </Box>
                   </Grid>
 

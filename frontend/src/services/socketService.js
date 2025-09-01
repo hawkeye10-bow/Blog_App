@@ -8,6 +8,8 @@ class SocketService {
     this.isConnected = false;
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 5;
+    this.heartbeatInterval = null;
+    this.currentUser = null;
   }
 
   connect() {
@@ -26,14 +28,17 @@ class SocketService {
       this.isConnected = true;
       this.reconnectAttempts = 0;
       
+      // Initialize user connection
+      const userId = localStorage.getItem('userId');
+      const userName = localStorage.getItem('userName') || 'Anonymous';
+      if (userId) {
+        this.currentUser = { userId, userName };
+        this.socket.emit('user-connected', { userId, userName });
+        this.startHeartbeat();
+      }
+      
       // Join blogs room for real-time updates
       this.socket.emit('join-blogs-room');
-      
-      // Join user room if logged in
-      const userId = localStorage.getItem('userId');
-      if (userId) {
-        this.socket.emit('join-user-room', userId);
-      }
     });
 
     this.socket.on('disconnect', (reason) => {
@@ -44,6 +49,8 @@ class SocketService {
         // Server disconnected, try to reconnect
         this.handleReconnect();
       }
+      
+      this.stopHeartbeat();
     });
 
     this.socket.on('connect_error', (error) => {
@@ -53,6 +60,38 @@ class SocketService {
     });
 
     return this.socket;
+  }
+
+  // Start heartbeat to keep connection alive
+  startHeartbeat() {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+    }
+    
+    this.heartbeatInterval = setInterval(() => {
+      if (this.socket && this.isConnected && this.currentUser) {
+        this.socket.emit('heartbeat', {
+          userId: this.currentUser.userId,
+          timestamp: new Date()
+        });
+      }
+    }, 30000); // Send heartbeat every 30 seconds
+  }
+
+  // Stop heartbeat
+  stopHeartbeat() {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+  }
+
+  // Set current user
+  setCurrentUser(userId, userName) {
+    this.currentUser = { userId, userName };
+    if (this.socket && this.isConnected) {
+      this.socket.emit('user-connected', { userId, userName });
+    }
   }
 
   handleReconnect() {
@@ -72,9 +111,119 @@ class SocketService {
 
   disconnect() {
     if (this.socket) {
+      // Notify server of intentional disconnect
+      if (this.currentUser) {
+        this.socket.emit('user-offline', this.currentUser.userId);
+      }
+      
+      this.stopHeartbeat();
       this.socket.disconnect();
       this.socket = null;
       this.isConnected = false;
+      this.currentUser = null;
+    }
+  }
+
+  // Blog room management
+  joinBlogRoom(blogId, userId) {
+    if (this.socket && this.isConnected) {
+      this.socket.emit('join-blog-room', { blogId, userId });
+    }
+  }
+
+  leaveBlogRoom(blogId, userId) {
+    if (this.socket && this.isConnected) {
+      this.socket.emit('leave-blog-room', { blogId, userId });
+    }
+  }
+
+  // Real-time blog interactions
+  emitBlogLike(blogId, userId, isLiked) {
+    if (this.socket && this.isConnected) {
+      this.socket.emit('blog-liked', { blogId, userId, isLiked });
+    }
+  }
+
+  emitBlogShare(blogId, userId, platform) {
+    if (this.socket && this.isConnected) {
+      this.socket.emit('blog-shared', { blogId, userId, platform });
+    }
+  }
+
+  emitComment(blogId, userId, content, parentCommentId = null) {
+    if (this.socket && this.isConnected) {
+      this.socket.emit('comment-added', { 
+        blogId, 
+        userId, 
+        content, 
+        parentCommentId 
+      });
+    }
+  }
+
+  // Real-time collaboration
+  joinCollaboration(blogId, userId, userName) {
+    if (this.socket && this.isConnected) {
+      this.socket.emit('join-collaboration', { blogId, userId, userName });
+    }
+  }
+
+  leaveCollaboration(blogId, userId, userName) {
+    if (this.socket && this.isConnected) {
+      this.socket.emit('leave-collaboration', { blogId, userId, userName });
+    }
+  }
+
+  emitContentChange(blogId, userId, userName, content, operation, position) {
+    if (this.socket && this.isConnected) {
+      this.socket.emit('collaboration-content-change', {
+        blogId,
+        userId,
+        userName,
+        content,
+        operation,
+        position
+      });
+    }
+  }
+
+  // Real-time analytics
+  trackPageView(blogId, userId, duration, scrollDepth, referrer) {
+    if (this.socket && this.isConnected) {
+      this.socket.emit('track-page-view', {
+        blogId,
+        userId,
+        duration,
+        scrollDepth,
+        referrer
+      });
+    }
+  }
+
+  // Real-time search
+  performLiveSearch(query, userId) {
+    if (this.socket && this.isConnected) {
+      this.socket.emit('live-search', { query, userId });
+    }
+  }
+
+  onSearchResults(callback) {
+    if (this.socket) {
+      this.socket.on('search-results', callback);
+    }
+  }
+
+  // Real-time notifications
+  sendNotification(recipientId, type, title, message, senderId, blogId) {
+    if (this.socket && this.isConnected) {
+      this.socket.emit('send-notification', {
+        recipientId,
+        type,
+        title,
+        message,
+        senderId,
+        blogId
+      });
     }
   }
 
@@ -97,6 +246,30 @@ class SocketService {
     }
   }
 
+  onBlogLikeUpdated(callback) {
+    if (this.socket) {
+      this.socket.on('blog-like-updated', callback);
+    }
+  }
+
+  onBlogShared(callback) {
+    if (this.socket) {
+      this.socket.on('blog-shared', callback);
+    }
+  }
+
+  onViewerJoined(callback) {
+    if (this.socket) {
+      this.socket.on('viewer-joined', callback);
+    }
+  }
+
+  onViewerLeft(callback) {
+    if (this.socket) {
+      this.socket.on('viewer-left', callback);
+    }
+  }
+
   onNewComment(callback) {
     if (this.socket) {
       this.socket.on('new-comment', callback);
@@ -106,6 +279,31 @@ class SocketService {
   onBlogLikeUpdated(callback) {
     if (this.socket) {
       this.socket.on('blog-like-updated', callback);
+    }
+  }
+
+  // Collaboration events
+  onCollaboratorJoined(callback) {
+    if (this.socket) {
+      this.socket.on('collaborator-joined', callback);
+    }
+  }
+
+  onCollaboratorLeft(callback) {
+    if (this.socket) {
+      this.socket.on('collaborator-left', callback);
+    }
+  }
+
+  onCollaborationUpdate(callback) {
+    if (this.socket) {
+      this.socket.on('collaboration-update', callback);
+    }
+  }
+
+  onContentUpdated(callback) {
+    if (this.socket) {
+      this.socket.on('content-updated', callback);
     }
   }
 
@@ -283,6 +481,51 @@ class SocketService {
     }
   }
 
+  // User activity tracking
+  emitUserActivity(userId, activity, metadata = {}) {
+    if (this.socket && this.isConnected) {
+      this.socket.emit('user-activity', { userId, activity, metadata });
+    }
+  }
+
+  onUserActivityUpdated(callback) {
+    if (this.socket) {
+      this.socket.on('user-activity-updated', callback);
+    }
+  }
+
+  // Analytics events
+  onAnalyticsUpdated(callback) {
+    if (this.socket) {
+      this.socket.on('analytics-updated', callback);
+    }
+  }
+
+  // Media upload events
+  emitUploadProgress(uploadId, progress, userId) {
+    if (this.socket && this.isConnected) {
+      this.socket.emit('media-upload-progress', { uploadId, progress, userId });
+    }
+  }
+
+  onUploadProgress(callback) {
+    if (this.socket) {
+      this.socket.on('upload-progress', callback);
+    }
+  }
+
+  onUserCommenting(callback) {
+    if (this.socket) {
+      this.socket.on('user-commenting', callback);
+    }
+  }
+
+  onUserStoppedCommenting(callback) {
+    if (this.socket) {
+      this.socket.on('user-stopped-commenting', callback);
+    }
+  }
+
   // Utility methods
   joinUserRoom(userId) {
     if (this.socket && this.isConnected) {
@@ -316,6 +559,10 @@ class SocketService {
 
   getConnectionStatus() {
     return this.isConnected;
+  }
+
+  getSocket() {
+    return this.socket;
   }
 
   // Clean up event listeners
