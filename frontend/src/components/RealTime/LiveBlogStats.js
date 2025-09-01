@@ -14,7 +14,9 @@ import {
   Badge,
   IconButton,
   Fade,
-  Zoom
+  Zoom,
+  CircularProgress,
+  Alert
 } from '@mui/material';
 import { styled } from '@mui/material/styles';
 import {
@@ -25,10 +27,14 @@ import {
   TrendingUp as TrendingIcon,
   People as PeopleIcon,
   Timeline as TimelineIcon,
-  Refresh as RefreshIcon
+  Refresh as RefreshIcon,
+  AccessTime as TimeIcon,
+  MouseIcon,
+  TouchApp as InteractionIcon
 } from '@mui/icons-material';
 import { useRealTimeBlogView } from '../../hooks/useRealTimeFeatures';
 import { formatDistanceToNow } from 'date-fns';
+import socketService from '../../services/socketService';
 
 const StatsContainer = styled(Paper)(({ theme }) => ({
   background: 'rgba(255, 255, 255, 0.95)',
@@ -97,49 +103,160 @@ const ActivityItem = styled(Box)(({ theme }) => ({
 }));
 
 const LiveBlogStats = ({ blogId, showViewers = true, showActivity = true, compact = false }) => {
-  const { currentViewers, liveStats, trackEngagement } = useRealTimeBlogView(blogId);
+  const { currentViewers, liveStats, timeOnPage, scrollDepth, interactions, trackEngagement } = useRealTimeBlogView(blogId);
   const [recentActivity, setRecentActivity] = useState([]);
   const [activeViewers, setActiveViewers] = useState([]);
+  const [detailedStats, setDetailedStats] = useState({
+    averageTimeOnPage: 0,
+    averageScrollDepth: 0,
+    bounceRate: 0,
+    engagementRate: 0
+  });
   const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState(null);
 
-  // Listen for real-time updates
+  // Setup real-time listeners
   useEffect(() => {
-    const handleAnalyticsUpdate = (event) => {
-      const data = event.detail;
+    if (!blogId) return;
+
+    const socket = socketService.connect();
+    
+    // Join analytics room for this blog
+    socketService.joinAnalyticsRoom(blogId);
+
+    // Listen for viewer updates
+    const handleViewerJoined = (data) => {
       if (data.blogId === blogId) {
-        setRecentActivity(data.recentActivity || []);
+        console.log(`👁️ Viewer joined blog ${blogId}:`, data);
+        setActiveViewers(prev => {
+          const existing = prev.find(v => v.userId === data.userId);
+          if (!existing) {
+            return [...prev, {
+              userId: data.userId,
+              userName: data.userName,
+              joinedAt: data.timestamp,
+              lastActivity: data.timestamp
+            }];
+          }
+          return prev;
+        });
       }
     };
 
-    const handleBlogViewUpdate = (event) => {
-      const data = event.detail;
+    const handleViewerLeft = (data) => {
       if (data.blogId === blogId) {
-        setActiveViewers(data.activeViewers || []);
+        console.log(`👁️ Viewer left blog ${blogId}:`, data);
+        setActiveViewers(prev => prev.filter(v => v.userId !== data.userId));
       }
     };
 
-    window.addEventListener('analytics-update', handleAnalyticsUpdate);
-    window.addEventListener('blog-view-update', handleBlogViewUpdate);
+    const handleCurrentViewers = (data) => {
+      if (data.blogId === blogId) {
+        console.log(`👁️ Current viewers for blog ${blogId}:`, data);
+        setActiveViewers(data.viewers.map(userId => ({
+          userId,
+          userName: `User ${userId}`, // This would be populated from user data
+          joinedAt: new Date(),
+          lastActivity: new Date()
+        })));
+      }
+    };
+
+    const handleAnalyticsUpdate = (data) => {
+      if (data.blogId === blogId) {
+        console.log(`📊 Analytics update for blog ${blogId}:`, data);
+        setRecentActivity(prev => {
+          const newActivity = {
+            type: data.event || data.action,
+            user: {
+              _id: data.userId,
+              name: data.userName || 'Anonymous'
+            },
+            timestamp: data.timestamp,
+            metadata: data.metadata
+          };
+          
+          return [newActivity, ...prev.slice(0, 19)];
+        });
+      }
+    };
+
+    const handleDetailedAnalyticsUpdate = (data) => {
+      if (data.blogId === blogId) {
+        console.log(`📊 Detailed analytics update for blog ${blogId}:`, data);
+        setDetailedStats({
+          averageTimeOnPage: data.averageReadingTime || 0,
+          averageScrollDepth: data.averageScrollDepth || 0,
+          bounceRate: data.bounceRate || 0,
+          engagementRate: data.engagementRate || 0
+        });
+      }
+    };
+
+    // Register event listeners
+    socketService.addEventListener('viewer-joined', handleViewerJoined);
+    socketService.addEventListener('viewer-left', handleViewerLeft);
+    socketService.addEventListener('current-viewers', handleCurrentViewers);
+    socketService.addEventListener('analytics-updated', handleAnalyticsUpdate);
+    socketService.addEventListener('detailed-analytics-updated', handleDetailedAnalyticsUpdate);
+    socketService.addEventListener('engagement-updated', handleAnalyticsUpdate);
 
     return () => {
-      window.removeEventListener('analytics-update', handleAnalyticsUpdate);
-      window.removeEventListener('blog-view-update', handleBlogViewUpdate);
+      socketService.leaveAnalyticsRoom(blogId);
+      socketService.removeEventListener('viewer-joined', handleViewerJoined);
+      socketService.removeEventListener('viewer-left', handleViewerLeft);
+      socketService.removeEventListener('current-viewers', handleCurrentViewers);
+      socketService.removeEventListener('analytics-updated', handleAnalyticsUpdate);
+      socketService.removeEventListener('detailed-analytics-updated', handleDetailedAnalyticsUpdate);
+      socketService.removeEventListener('engagement-updated', handleAnalyticsUpdate);
     };
   }, [blogId]);
 
-  const handleRefresh = async () => {
-    setRefreshing(true);
+  // Fetch initial analytics data
+  useEffect(() => {
+    if (blogId) {
+      fetchInitialData();
+    }
+  }, [blogId]);
+
+  const fetchInitialData = async () => {
     try {
-      // Refresh real-time data
-      const stats = await fetch(`/api/realtime/blog/${blogId}/stats`);
-      const data = await stats.json();
+      const response = await fetch(`/api/realtime/blog/${blogId}/stats`, {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      });
       
-      if (data.stats) {
-        setRecentActivity(data.stats.recentActivity || []);
-        setActiveViewers(data.stats.currentViewers || []);
+      if (response.ok) {
+        const data = await response.json();
+        const stats = data.stats;
+        
+        setActiveViewers(stats.activeViewers || []);
+        setRecentActivity(stats.recentActivity || []);
+        setDetailedStats({
+          averageTimeOnPage: stats.averageReadingTime || 0,
+          averageScrollDepth: stats.averageScrollDepth || 0,
+          bounceRate: stats.bounceRate || 0,
+          engagementRate: stats.engagementRate || 0
+        });
+      } else {
+        setError('Failed to load analytics data');
       }
     } catch (error) {
+      console.error('Error fetching initial analytics:', error);
+      setError('Failed to load analytics data');
+    }
+  };
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    setError(null);
+    
+    try {
+      await fetchInitialData();
+    } catch (error) {
       console.error('Error refreshing stats:', error);
+      setError('Failed to refresh data');
     } finally {
       setRefreshing(false);
     }
@@ -176,10 +293,26 @@ const LiveBlogStats = ({ blogId, showViewers = true, showActivity = true, compac
         
         <Chip
           icon={<PeopleIcon />}
-          label={`${currentViewers} viewing`}
+          label={`${activeViewers.length} viewing`}
           size="small"
           color="primary"
           variant="outlined"
+        />
+        
+        <Chip
+          icon={<TimeIcon />}
+          label={`${Math.floor(timeOnPage / 60)}:${(timeOnPage % 60).toString().padStart(2, '0')}`}
+          size="small"
+          variant="outlined"
+          title="Your time on page"
+        />
+        
+        <Chip
+          icon={<InteractionIcon />}
+          label={`${scrollDepth}%`}
+          size="small"
+          variant="outlined"
+          title="Your scroll depth"
         />
         
         <Chip
@@ -201,6 +334,12 @@ const LiveBlogStats = ({ blogId, showViewers = true, showActivity = true, compac
 
   return (
     <StatsContainer>
+      {error && (
+        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+          {error}
+        </Alert>
+      )}
+      
       {/* Header */}
       <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
         <Box display="flex" alignItems="center" gap={2}>
@@ -213,6 +352,7 @@ const LiveBlogStats = ({ blogId, showViewers = true, showActivity = true, compac
             size="small" 
             onClick={handleRefresh}
             disabled={refreshing}
+            title="Refresh analytics data"
           >
             <RefreshIcon sx={{ 
               animation: refreshing ? 'spin 1s linear infinite' : 'none',
@@ -223,6 +363,47 @@ const LiveBlogStats = ({ blogId, showViewers = true, showActivity = true, compac
             }} />
           </IconButton>
         </Box>
+      </Box>
+
+      {/* Personal Stats (for current user) */}
+      <Box mb={3} p={2} bgcolor="rgba(102, 126, 234, 0.05)" borderRadius={2}>
+        <Typography variant="subtitle2" fontWeight={600} mb={2} color="primary">
+          📊 Your Session Stats
+        </Typography>
+        <Grid container spacing={2}>
+          <Grid item xs={6}>
+            <Box display="flex" alignItems="center" gap={1}>
+              <TimeIcon fontSize="small" />
+              <Typography variant="body2">
+                Time: {Math.floor(timeOnPage / 60)}:{(timeOnPage % 60).toString().padStart(2, '0')}
+              </Typography>
+            </Box>
+          </Grid>
+          <Grid item xs={6}>
+            <Box display="flex" alignItems="center" gap={1}>
+              <MouseIcon fontSize="small" />
+              <Typography variant="body2">
+                Scroll: {scrollDepth}%
+              </Typography>
+            </Box>
+          </Grid>
+          <Grid item xs={6}>
+            <Box display="flex" alignItems="center" gap={1}>
+              <InteractionIcon fontSize="small" />
+              <Typography variant="body2">
+                Interactions: {interactions}
+              </Typography>
+            </Box>
+          </Grid>
+          <Grid item xs={6}>
+            <Box display="flex" alignItems="center" gap={1}>
+              <TrendingIcon fontSize="small" />
+              <Typography variant="body2">
+                Engagement: Active
+              </Typography>
+            </Box>
+          </Grid>
+        </Grid>
       </Box>
 
       {/* Live Statistics */}
@@ -288,7 +469,7 @@ const LiveBlogStats = ({ blogId, showViewers = true, showActivity = true, compac
                 <PeopleIcon color="success" />
                 <Box>
                   <Typography variant="h6" fontWeight={700}>
-                    {currentViewers}
+                    {activeViewers.length}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
                     Live Viewers
@@ -300,21 +481,61 @@ const LiveBlogStats = ({ blogId, showViewers = true, showActivity = true, compac
         </Grid>
       </Grid>
 
+      {/* Detailed Analytics */}
+      <Box mb={3}>
+        <Typography variant="subtitle2" fontWeight={600} mb={2}>
+          📈 Performance Metrics
+        </Typography>
+        <Grid container spacing={2}>
+          <Grid item xs={6}>
+            <Box>
+              <Typography variant="caption" color="text.secondary">
+                Avg. Reading Time
+              </Typography>
+              <LinearProgress
+                variant="determinate"
+                value={Math.min((detailedStats.averageTimeOnPage / 300) * 100, 100)} // Max 5 minutes
+                sx={{ mt: 1, height: 6, borderRadius: 3 }}
+              />
+              <Typography variant="caption">
+                {Math.floor(detailedStats.averageTimeOnPage / 60)}:{(detailedStats.averageTimeOnPage % 60).toString().padStart(2, '0')}
+              </Typography>
+            </Box>
+          </Grid>
+          <Grid item xs={6}>
+            <Box>
+              <Typography variant="caption" color="text.secondary">
+                Engagement Rate
+              </Typography>
+              <LinearProgress
+                variant="determinate"
+                value={detailedStats.engagementRate}
+                sx={{ mt: 1, height: 6, borderRadius: 3 }}
+                color="success"
+              />
+              <Typography variant="caption">
+                {detailedStats.engagementRate.toFixed(1)}%
+              </Typography>
+            </Box>
+          </Grid>
+        </Grid>
+      </Box>
+
       {/* Active Viewers */}
       {showViewers && activeViewers.length > 0 && (
         <Fade in={true}>
           <Box mb={3}>
             <Typography variant="subtitle2" fontWeight={600} mb={2}>
-              Currently Reading ({activeViewers.length})
+              👁️ Currently Reading ({activeViewers.length})
             </Typography>
             <AvatarGroup max={8} sx={{ justifyContent: 'flex-start' }}>
               {activeViewers.map((viewer, index) => (
                 <Tooltip 
-                  key={viewer.user?._id || index}
-                  title={`${viewer.user?.name || 'Anonymous'} - ${formatDistanceToNow(new Date(viewer.joinedAt), { addSuffix: true })}`}
+                  key={viewer.userId || index}
+                  title={`${viewer.userName || 'Anonymous'} - ${formatDistanceToNow(new Date(viewer.joinedAt), { addSuffix: true })}`}
                 >
                   <ViewerAvatar
-                    src={viewer.user?.profile?.profilePicture}
+                    src={viewer.profilePicture}
                     sx={{ 
                       animation: `fadeIn 0.5s ease ${index * 0.1}s both`,
                       '@keyframes fadeIn': {
@@ -323,7 +544,7 @@ const LiveBlogStats = ({ blogId, showViewers = true, showActivity = true, compac
                       }
                     }}
                   >
-                    {viewer.user?.name?.charAt(0) || '?'}
+                    {viewer.userName?.charAt(0) || '?'}
                   </ViewerAvatar>
                 </Tooltip>
               ))}
@@ -337,11 +558,11 @@ const LiveBlogStats = ({ blogId, showViewers = true, showActivity = true, compac
         <Box>
           <Typography variant="subtitle2" fontWeight={600} mb={2} display="flex" alignItems="center" gap={1}>
             <TimelineIcon fontSize="small" />
-            Recent Activity
+            ⚡ Live Activity
           </Typography>
           
           {recentActivity.length > 0 ? (
-            <Box maxHeight={200} overflow="auto">
+            <Box maxHeight={250} overflow="auto">
               {recentActivity.slice(0, 10).map((activity, index) => (
                 <Zoom in={true} key={index} style={{ transitionDelay: `${index * 50}ms` }}>
                   <ActivityItem>
@@ -354,10 +575,13 @@ const LiveBlogStats = ({ blogId, showViewers = true, showActivity = true, compac
                     
                     <Box flex={1}>
                       <Typography variant="body2">
-                        <strong>{activity.user?.name || 'Someone'}</strong> {activity.type}d this blog
+                        <strong>{activity.user?.name || 'Someone'}</strong> {activity.type === 'view' ? 'viewed' : `${activity.type}d`} this blog
                       </Typography>
                       <Typography variant="caption" color="text.secondary">
                         {formatDistanceToNow(new Date(activity.timestamp), { addSuffix: true })}
+                        {activity.metadata?.timeOnPage && (
+                          ` • ${Math.floor(activity.metadata.timeOnPage / 60)}:${(activity.metadata.timeOnPage % 60).toString().padStart(2, '0')} read time`
+                        )}
                       </Typography>
                     </Box>
                     
@@ -374,7 +598,7 @@ const LiveBlogStats = ({ blogId, showViewers = true, showActivity = true, compac
             </Box>
           ) : (
             <Typography variant="body2" color="text.secondary" textAlign="center" py={2}>
-              No recent activity
+              No recent activity - be the first to engage!
             </Typography>
           )}
         </Box>

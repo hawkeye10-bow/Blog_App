@@ -14,7 +14,11 @@ import {
   Chip,
   Paper,
   Fade,
-  Zoom
+  Zoom,
+  Badge,
+  IconButton,
+  Tooltip,
+  Snackbar
 } from '@mui/material';
 import { styled } from '@mui/material/styles';
 import { 
@@ -22,7 +26,11 @@ import {
   Article as ArticleIcon,
   TrendingUp as TrendingIcon,
   People as PeopleIcon,
-  Today as TodayIcon
+  Today as TodayIcon,
+  Wifi as OnlineIcon,
+  WifiOff as OfflineIcon,
+  Notifications as NotificationIcon,
+  Update as UpdateIcon
 } from '@mui/icons-material';
 import { useRealTimeBlogs } from '../hooks/useRealTimeBlogs';
 import SearchBar from './SearchBar';
@@ -31,8 +39,10 @@ import LiveContentFeed from './RealTime/LiveContentFeed';
 import LiveTypingIndicators from './RealTime/LiveTypingIndicators';
 import LiveNotifications from './RealTime/LiveNotifications';
 import socketService from '../services/socketService';
+import { useRealTimeFeatures } from '../hooks/useRealTimeFeatures';
 import axios from 'axios';
 import { serverURL } from '../helper/Helper';
+import { formatDistanceToNow } from 'date-fns';
 
 // Styled Components
 const BlogsContainer = styled(Container)(({ theme }) => ({
@@ -141,6 +151,38 @@ const PaginationContainer = styled(Box)(({ theme }) => ({
   },
 }));
 
+const ConnectionStatus = styled(Box)(({ theme }) => ({
+  position: 'fixed',
+  top: '90px',
+  right: theme.spacing(2),
+  zIndex: 1000,
+  background: 'rgba(255, 255, 255, 0.95)',
+  backdropFilter: 'blur(20px)',
+  borderRadius: theme.spacing(2),
+  padding: theme.spacing(1, 2),
+  border: '1px solid rgba(255, 255, 255, 0.3)',
+  boxShadow: '0 4px 20px rgba(0,0,0,0.1)',
+}));
+
+const NewContentBanner = styled(Paper)(({ theme }) => ({
+  position: 'fixed',
+  top: '90px',
+  left: '50%',
+  transform: 'translateX(-50%)',
+  zIndex: 1000,
+  background: 'linear-gradient(135deg, #667eea, #764ba2)',
+  color: 'white',
+  padding: theme.spacing(1, 3),
+  borderRadius: theme.spacing(3),
+  boxShadow: '0 8px 25px rgba(102, 126, 234, 0.3)',
+  cursor: 'pointer',
+  transition: 'all 0.3s ease',
+  '&:hover': {
+    transform: 'translateX(-50%) translateY(-2px)',
+    boxShadow: '0 12px 35px rgba(102, 126, 234, 0.4)',
+  },
+}));
+
 const Blogs = () => {
   const {
     blogs,
@@ -152,9 +194,13 @@ const Blogs = () => {
     refreshBlogs
   } = useRealTimeBlogs(1, 6);
 
+  const { isConnected } = useRealTimeFeatures();
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [stats, setStats] = useState(null);
+  const [newBlogsCount, setNewBlogsCount] = useState(0);
+  const [recentUpdates, setRecentUpdates] = useState([]);
+  const [showUpdateNotification, setShowUpdateNotification] = useState(false);
 
   // Fetch blog statistics
   useEffect(() => {
@@ -170,19 +216,80 @@ const Blogs = () => {
     fetchStats();
   }, [blogs]); // Refetch stats when blogs change
 
+  // Setup real-time listeners for new content
+  useEffect(() => {
+    const socket = socketService.connect();
+    
+    // Listen for new blogs
+    const handleNewBlog = (data) => {
+      console.log('📰 New blog published:', data);
+      setNewBlogsCount(prev => prev + 1);
+      setRecentUpdates(prev => [{
+        type: 'new_blog',
+        message: data.message,
+        blog: data.blog,
+        timestamp: data.timestamp
+      }, ...prev.slice(0, 4)]);
+      
+      setShowUpdateNotification(true);
+    };
+
+    // Listen for blog updates
+    const handleBlogUpdated = (data) => {
+      console.log('📝 Blog updated:', data);
+      setRecentUpdates(prev => [{
+        type: 'blog_updated',
+        message: data.message,
+        blog: data.blog,
+        timestamp: data.timestamp
+      }, ...prev.slice(0, 4)]);
+    };
+
+    // Listen for blog deletions
+    const handleBlogDeleted = (data) => {
+      console.log('🗑️ Blog deleted:', data);
+      setRecentUpdates(prev => [{
+        type: 'blog_deleted',
+        message: data.message,
+        blogId: data.blogId,
+        timestamp: data.timestamp
+      }, ...prev.slice(0, 4)]);
+    };
+
+    // Register event listeners
+    socketService.addEventListener('new-blog', handleNewBlog);
+    socketService.addEventListener('blog-updated', handleBlogUpdated);
+    socketService.addEventListener('blog-deleted', handleBlogDeleted);
+
+    return () => {
+      socketService.removeEventListener('new-blog', handleNewBlog);
+      socketService.removeEventListener('blog-updated', handleBlogUpdated);
+      socketService.removeEventListener('blog-deleted', handleBlogDeleted);
+    };
+  }, []);
+
   // Handle search results
   const handleSearchResults = (results, query) => {
     setSearchResults(results);
     setIsSearching(!!query);
+    
+    if (query) {
+      console.log(`🔍 Search performed: "${query}" - ${results.length} results`);
+    }
   };
 
-  // Connect to socket for real-time updates
-  useEffect(() => {
-    socketService.connect();
-    return () => {
-      // Don't disconnect here as other components might be using it
-    };
-  }, []);
+  const handleLoadNewContent = () => {
+    setNewBlogsCount(0);
+    setShowUpdateNotification(false);
+    refreshBlogs();
+  };
+
+  const handleRefreshClick = () => {
+    setNewBlogsCount(0);
+    setRecentUpdates([]);
+    setShowUpdateNotification(false);
+    refreshBlogs();
+  };
 
   // Render skeleton loading cards
   const renderSkeletons = () => {
@@ -271,13 +378,48 @@ const Blogs = () => {
       {/* Real-time Indicator */}
       <RealTimeIndicator />
 
+      {/* Connection Status */}
+      <ConnectionStatus>
+        <Box display="flex" alignItems="center" gap={1}>
+          {isConnected ? (
+            <>
+              <OnlineIcon color="success" fontSize="small" />
+              <Typography variant="caption" color="success.main" fontWeight={600}>
+                Live
+              </Typography>
+            </>
+          ) : (
+            <>
+              <OfflineIcon color="error" fontSize="small" />
+              <Typography variant="caption" color="error.main" fontWeight={600}>
+                Offline
+              </Typography>
+            </>
+          )}
+        </Box>
+      </ConnectionStatus>
+
+      {/* New Content Banner */}
+      {newBlogsCount > 0 && (
+        <Fade in={true}>
+          <NewContentBanner onClick={handleLoadNewContent}>
+            <Box display="flex" alignItems="center" gap={1}>
+              <UpdateIcon />
+              <Typography variant="body2" fontWeight={600}>
+                {newBlogsCount} new blog{newBlogsCount > 1 ? 's' : ''} available
+              </Typography>
+            </Box>
+          </NewContentBanner>
+        </Fade>
+      )}
+
       {/* Header */}
       <BlogsHeader>
         <BlogsTitle variant="h1">
           Discover Amazing Stories
         </BlogsTitle>
         <BlogsSubtitle variant="h6">
-          Explore a collection of inspiring blogs written by our community of creators
+          Explore live, inspiring blogs written by our community of creators
         </BlogsSubtitle>
 
         {/* Search Bar */}
@@ -311,7 +453,11 @@ const Blogs = () => {
                 <Grid item>
                   <StatChip
                     icon={<TrendingIcon />}
-                    label="Live Updates"
+                    label={isConnected ? "Live Updates" : "Offline Mode"}
+                    sx={{ 
+                      backgroundColor: isConnected ? 'rgba(76, 175, 80, 0.1)' : 'rgba(244, 67, 54, 0.1)',
+                      color: isConnected ? '#4caf50' : '#f44336'
+                    }}
                   />
                 </Grid>
               </Grid>
@@ -346,6 +492,7 @@ const Blogs = () => {
                     readingTime={blog.readingTime}
                     likes={blog.likes || []}
                     comments={blog.comments || []}
+                    isLive={true}
                   />
                 </div>
               </Fade>
@@ -370,6 +517,26 @@ const Blogs = () => {
           renderEmptyState()
         )}
       </Box>
+
+      {/* Recent Updates Notification */}
+      <Snackbar
+        open={showUpdateNotification}
+        autoHideDuration={6000}
+        onClose={() => setShowUpdateNotification(false)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+      >
+        <Alert 
+          severity="info" 
+          onClose={() => setShowUpdateNotification(false)}
+          action={
+            <Button color="inherit" size="small" onClick={handleLoadNewContent}>
+              VIEW
+            </Button>
+          }
+        >
+          {recentUpdates.length > 0 && recentUpdates[0].message}
+        </Alert>
+      </Snackbar>
 
       {/* Typing Indicators */}
       <LiveTypingIndicators showGlobal={true} />

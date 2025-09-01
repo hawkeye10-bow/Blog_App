@@ -11,7 +11,8 @@ import {
   Chip,
   LinearProgress,
   Fade,
-  Zoom
+  Zoom,
+  CircularProgress
 } from '@mui/material';
 import { styled } from '@mui/material/styles';
 import { 
@@ -24,7 +25,7 @@ import {
 } from '@mui/icons-material';
 import axios from 'axios';
 import { serverURL } from '../helper/Helper';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import { useTypingIndicator } from '../hooks/useTypingIndicator';
@@ -34,6 +35,7 @@ import RichTextEditor from './RichTextEditor';
 import CategorySelector from './CategorySelector';
 import CollaborativeEditor from './RealTime/CollaborativeEditor';
 import { useRealTimeFeatures } from '../hooks/useRealTimeFeatures';
+import { formatDistanceToNow } from 'date-fns';
 
 // Styled Components
 const AddBlogContainer = styled(Container)(({ theme }) => ({
@@ -171,7 +173,7 @@ const CharacterCount = styled(Typography)(({ theme }) => ({
 const AddBlog = () => {
   const navigate = useNavigate();
   const user = useSelector(state => state.user);
-  const { startTyping, stopTyping, trackEngagement } = useRealTimeFeatures();
+  const { startTyping, stopTyping, trackEngagement } = useRealTimeFeatures(null);
   const [input, setInput] = useState({
     title: "",
     description: "",
@@ -192,14 +194,79 @@ const AddBlog = () => {
   const [imageValid, setImageValid] = useState(false);
   const [progress, setProgress] = useState(0);
   const [useCollaborativeEditor, setUseCollaborativeEditor] = useState(false);
+  const [autoSaving, setAutoSaving] = useState(false);
+  const [lastSaved, setLastSaved] = useState(null);
 
   const { handleInputChange, cleanup } = useTypingIndicator('creating');
+  const autoSaveTimeoutRef = useRef(null);
 
   // Connect to socket
   useEffect(() => {
     socketService.connect();
+    
+    // Load draft from localStorage
+    loadDraft();
+    
     return cleanup;
   }, [cleanup]);
+
+  // Auto-save draft functionality
+  useEffect(() => {
+    if (autoSaveTimeoutRef.current) {
+      clearTimeout(autoSaveTimeoutRef.current);
+    }
+    
+    // Auto-save after 2 seconds of inactivity
+    autoSaveTimeoutRef.current = setTimeout(() => {
+      saveDraft();
+    }, 2000);
+    
+    return () => {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+      }
+    };
+  }, [input]);
+
+  const loadDraft = () => {
+    try {
+      const savedDraft = localStorage.getItem('blog_draft');
+      if (savedDraft) {
+        const draft = JSON.parse(savedDraft);
+        setInput(draft);
+        setLastSaved(new Date(draft.lastSaved));
+        console.log('📝 Loaded draft from localStorage');
+      }
+    } catch (error) {
+      console.error('Error loading draft:', error);
+    }
+  };
+
+  const saveDraft = async () => {
+    if (!input.title && !input.description && !input.content) return;
+    
+    try {
+      setAutoSaving(true);
+      const draftData = {
+        ...input,
+        lastSaved: new Date().toISOString()
+      };
+      
+      localStorage.setItem('blog_draft', JSON.stringify(draftData));
+      setLastSaved(new Date());
+      
+      console.log('💾 Draft auto-saved');
+    } catch (error) {
+      console.error('Error saving draft:', error);
+    } finally {
+      setAutoSaving(false);
+    }
+  };
+
+  const clearDraft = () => {
+    localStorage.removeItem('blog_draft');
+    setLastSaved(null);
+  };
 
   // Validate image URL
   useEffect(() => {
@@ -215,6 +282,7 @@ const AddBlog = () => {
 
   const sendRequest = async () => {
     try {
+      console.log('📝 Creating new blog post...');
       const res = await axios.post(`${serverURL}/api/blog/add`, {
         title: input.title,
         description: input.description,
@@ -229,6 +297,8 @@ const AddBlog = () => {
         allowComments: input.allowComments,
         user: localStorage.getItem("userId")
       });
+      
+      console.log('✅ Blog created successfully:', res.data);
       return res.data;
     } catch (err) {
       console.error('Error creating blog:', err);
@@ -245,7 +315,9 @@ const AddBlog = () => {
     }));
     
     // Start typing indicator
-    startTyping('creating');
+    if (user?._id) {
+      startTyping('creating');
+    }
     
     // Clear messages when user starts typing
     if (error) setError("");
@@ -310,6 +382,12 @@ const AddBlog = () => {
       setProgress(100);
       setSuccess("Blog created successfully! Redirecting...");
       
+      // Clear draft after successful creation
+      clearDraft();
+      
+      // Emit real-time blog creation
+      socketService.emitBlogCreated(data.blog);
+      
       // Track engagement
       trackEngagement('create', null, {
         title: input.title,
@@ -337,6 +415,7 @@ const AddBlog = () => {
     } finally {
       clearInterval(progressInterval);
       setIsLoading(false);
+      stopTyping(); // Stop typing indicator
     }
   };
 
@@ -367,6 +446,16 @@ const AddBlog = () => {
             <Typography variant="body1" color="text.secondary" sx={{ fontSize: '1.1rem' }}>
               Share your thoughts, ideas, and stories with the world
             </Typography>
+            
+            {/* Auto-save indicator */}
+            {lastSaved && (
+              <Box mt={2} display="flex" alignItems="center" justifyContent="center" gap={1}>
+                <Typography variant="caption" color="text.secondary">
+                  {autoSaving ? 'Saving draft...' : `Draft saved ${formatDistanceToNow(lastSaved, { addSuffix: true })}`}
+                </Typography>
+                {autoSaving && <CircularProgress size={12} />}
+              </Box>
+            )}
           </Box>
 
           {/* Progress Bar */}
@@ -493,13 +582,19 @@ const AddBlog = () => {
                     <CollaborativeEditor
                       blogId={null} // New blog, no ID yet
                       initialContent={input.content}
-                      onContentChange={(content) => setInput(prev => ({ ...prev, content }))}
+                      onContentChange={(content) => {
+                        setInput(prev => ({ ...prev, content }));
+                        startTyping('creating');
+                      }}
                       readOnly={false}
                     />
                   ) : (
                     <RichTextEditor
                       value={input.content}
-                      onChange={(e) => setInput(prev => ({ ...prev, content: e.target.value }))}
+                      onChange={(e) => {
+                        setInput(prev => ({ ...prev, content: e.target.value }));
+                        startTyping('creating');
+                      }}
                       placeholder="Write your full blog content here..."
                       minHeight={400}
                       showPreview={true}
@@ -610,6 +705,32 @@ const AddBlog = () => {
             </Grid>
           </form>
 
+          {/* Draft Management */}
+          {lastSaved && (
+            <Box mt={4} p={3} sx={{ 
+              background: 'rgba(76, 175, 80, 0.05)', 
+              borderRadius: 2,
+              border: '1px solid rgba(76, 175, 80, 0.2)'
+            }}>
+              <Typography variant="subtitle2" color="success.main" mb={1}>
+                💾 Draft Management
+              </Typography>
+              <Box display="flex" justifyContent="space-between" alignItems="center">
+                <Typography variant="body2" color="text.secondary">
+                  Last saved: {formatDistanceToNow(lastSaved, { addSuffix: true })}
+                </Typography>
+                <Button
+                  size="small"
+                  onClick={clearDraft}
+                  color="error"
+                  variant="outlined"
+                >
+                  Clear Draft
+                </Button>
+              </Box>
+            </Box>
+          )}
+
           {/* Blog Preview */}
           {showPreview && isFormValid && (
             <Fade in={true}>
@@ -653,6 +774,7 @@ const AddBlog = () => {
                   <Chip label={`By ${user?.name || 'You'}`} color="primary" variant="outlined" />
                   <Chip label={new Date().toLocaleDateString()} color="default" variant="outlined" />
                   <Chip label={`${Math.ceil(input.description.split(' ').length / 200)} min read`} color="default" variant="outlined" />
+                  <Chip label="Preview" color="warning" variant="outlined" />
                 </Box>
               </Box>
             </Fade>

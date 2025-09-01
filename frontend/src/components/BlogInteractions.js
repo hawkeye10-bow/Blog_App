@@ -18,7 +18,12 @@ import {
   ListItem,
   ListItemAvatar,
   ListItemText,
-  Collapse
+  Collapse,
+  Tooltip,
+  Badge,
+  CircularProgress,
+  Alert,
+  Snackbar
 } from '@mui/material';
 import { styled } from '@mui/material/styles';
 import {
@@ -37,7 +42,9 @@ import {
   LinkedIn as LinkedInIcon,
   WhatsApp as WhatsAppIcon,
   Email as EmailIcon,
-  Link as LinkIcon
+  Link as LinkIcon,
+  ContentCopy as CopyIcon,
+  CheckCircle as CheckIcon
 } from '@mui/icons-material';
 import { useSelector } from 'react-redux';
 import apiService from '../services/apiService';
@@ -52,7 +59,8 @@ const InteractionBar = styled(Box)(({ theme }) => ({
   gap: theme.spacing(2),
   padding: theme.spacing(2),
   borderTop: '1px solid rgba(0, 0, 0, 0.08)',
-  backgroundColor: 'rgba(248, 250, 252, 0.5)',
+  backgroundColor: 'rgba(248, 250, 252, 0.8)',
+  backdropFilter: 'blur(10px)',
 }));
 
 const InteractionButton = styled(IconButton)(({ theme, active }) => ({
@@ -61,9 +69,30 @@ const InteractionButton = styled(IconButton)(({ theme, active }) => ({
   transition: 'all 0.3s ease',
   backgroundColor: active ? 'rgba(102, 126, 234, 0.1)' : 'transparent',
   color: active ? '#667eea' : theme.palette.text.secondary,
+  position: 'relative',
+  overflow: 'hidden',
   '&:hover': {
     backgroundColor: 'rgba(102, 126, 234, 0.15)',
     transform: 'scale(1.1)',
+    '&::before': {
+      content: '""',
+      position: 'absolute',
+      top: 0,
+      left: '-100%',
+      width: '100%',
+      height: '100%',
+      background: 'linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent)',
+      transition: 'left 0.6s ease',
+      left: '100%',
+    },
+  },
+  '&:disabled': {
+    opacity: 0.5,
+    cursor: 'not-allowed',
+    '&:hover': {
+      transform: 'none',
+      backgroundColor: 'transparent',
+    },
   },
 }));
 
@@ -93,6 +122,10 @@ const BlogInteractions = ({ blogId, authorId, initialLikes = [], initialComments
   const [replyTo, setReplyTo] = useState(null);
   const [shareMenuAnchor, setShareMenuAnchor] = useState(null);
   const [submittingComment, setSubmittingComment] = useState(false);
+  const [likingInProgress, setLikingInProgress] = useState(false);
+  const [bookmarkingInProgress, setBookmarkingInProgress] = useState(false);
+  const [shareSuccess, setShareSuccess] = useState(false);
+  const [error, setError] = useState('');
 
   // Debug user authentication
   useEffect(() => {
@@ -104,10 +137,69 @@ const BlogInteractions = ({ blogId, authorId, initialLikes = [], initialComments
   useEffect(() => {
     if (user) {
       setIsLiked(likes.some(like => like.user === user._id));
-      // Check bookmark status
       checkBookmarkStatus();
     }
   }, [likes, user]);
+
+  // Setup real-time listeners
+  useEffect(() => {
+    if (!blogId) return;
+
+    const socket = socketService.connect();
+    
+    // Join blog room for real-time updates
+    socketService.joinBlogRoom(blogId, user?._id);
+
+    // Listen for like updates
+    const handleLikeUpdate = (data) => {
+      if (data.blogId === blogId) {
+        console.log('❤️ Real-time like update:', data);
+        setLikes(prev => {
+          // Update like count based on server response
+          const newLikes = [];
+          for (let i = 0; i < data.likeCount; i++) {
+            newLikes.push({ user: `user_${i}`, createdAt: new Date() });
+          }
+          return newLikes;
+        });
+        
+        // Update user's like status if it's their action
+        if (data.userId === user?._id) {
+          setIsLiked(data.isLiked);
+        }
+      }
+    };
+
+    // Listen for comment updates
+    const handleCommentUpdate = (data) => {
+      if (data.blogId === blogId) {
+        console.log('💬 Real-time comment update:', data);
+        if (data.comment) {
+          setComments(prev => [...prev, data.comment]);
+        }
+      }
+    };
+
+    // Listen for share updates
+    const handleShareUpdate = (data) => {
+      if (data.blogId === blogId) {
+        console.log('📤 Real-time share update:', data);
+        // Update share count or show notification
+      }
+    };
+
+    // Register event listeners
+    socketService.addEventListener('blog-like-updated', handleLikeUpdate);
+    socketService.addEventListener('new-comment', handleCommentUpdate);
+    socketService.addEventListener('blog-shared', handleShareUpdate);
+
+    return () => {
+      socketService.leaveBlogRoom(blogId, user?._id);
+      socketService.removeEventListener('blog-like-updated', handleLikeUpdate);
+      socketService.removeEventListener('new-comment', handleCommentUpdate);
+      socketService.removeEventListener('blog-shared', handleShareUpdate);
+    };
+  }, [blogId, user?._id]);
 
   // Check bookmark status
   const checkBookmarkStatus = async () => {
@@ -122,144 +214,169 @@ const BlogInteractions = ({ blogId, authorId, initialLikes = [], initialComments
     }
   };
 
-  useEffect(() => {
-    // Set up real-time updates
-    const socket = socketService.connect();
-    
-    // Listen for new comments
-    const handleNewComment = (data) => {
-      if (data.blogId === blogId) {
-        console.log('📝 Real-time: New comment received:', data);
-        setComments(prev => [...prev, data.comment]);
-      }
-    };
-
-    // Listen for like updates
-    const handleLikeUpdate = (data) => {
-      if (data.blogId === blogId) {
-        console.log('❤️ Real-time: Like update received:', data);
-        setLikes(prev => {
-          if (data.isLiked) {
-            // Add like if not already present
-            const exists = prev.some(like => like.user === user?._id);
-            if (!exists) {
-              return [...prev, { user: user._id, createdAt: new Date() }];
-            }
-          } else {
-            // Remove like
-            return prev.filter(like => like.user !== user?._id);
-          }
-          return prev;
-        });
-        setIsLiked(data.isLiked);
-      }
-    };
-
-    // Listen for blog updates
-    const handleBlogUpdated = (data) => {
-      if (data.blogId === blogId) {
-        console.log('📝 Real-time: Blog updated:', data);
-        // Update likes and comments if provided
-        if (data.likes) setLikes(data.likes);
-        if (data.comments) setComments(data.comments);
-      }
-    };
-
-    // Set up event listeners
-    socket.on('new-comment', handleNewComment);
-    socket.on('blog-like-updated', handleLikeUpdate);
-    socket.on('blog-updated', handleBlogUpdated);
-
-    // Join blogs room for real-time updates
-    socket.emit('join-blogs-room');
-
-    return () => {
-      socket.off('new-comment', handleNewComment);
-      socket.off('blog-like-updated', handleLikeUpdate);
-      socket.off('blog-updated', handleBlogUpdated);
-    };
-  }, [blogId, user?._id]);
-
   const handleLike = async () => {
     if (!user?._id) {
       console.log('❌ User not authenticated');
+      setError('Please login to like this blog');
       return;
     }
 
     // Prevent users from liking their own blogs
     if (user._id === authorId) {
       console.log('❌ Cannot like your own blog');
+      setError('You cannot like your own blog');
       return;
     }
     
+    if (likingInProgress) return;
+    
+    setLikingInProgress(true);
+    setError('');
+    
     try {
       console.log('❤️ Sending like request for blog:', blogId);
-      const response = await apiService.post(`/api/blog/${blogId}/like`, {
-        userId: user._id
-      });
       
-      console.log('❤️ Like response:', response.data);
-      setIsLiked(response.data.isLiked);
+      // Optimistic update
+      const newIsLiked = !isLiked;
+      setIsLiked(newIsLiked);
       setLikes(prev => 
-        response.data.isLiked 
+        newIsLiked 
           ? [...prev, { user: user._id, createdAt: new Date() }]
           : prev.filter(like => like.user !== user._id)
       );
       
+      // Send to server
+      const response = await apiService.post(`/api/blog/${blogId}/like`, {
+        userId: user._id
+      });
+      
+      // Emit real-time update
+      socketService.emitBlogLike(blogId, user._id, newIsLiked);
+      
       // Track engagement
-      trackEngagement(response.data.isLiked ? 'like' : 'unlike', blogId);
+      trackEngagement(newIsLiked ? 'like' : 'unlike', blogId, {
+        previousState: isLiked,
+        newState: newIsLiked
+      });
+      
+      console.log('❤️ Like action completed:', response.data);
     } catch (err) {
       console.error('❌ Error toggling like:', err);
+      
+      // Revert optimistic update on error
+      setIsLiked(!isLiked);
+      setLikes(prev => 
+        isLiked 
+          ? [...prev, { user: user._id, createdAt: new Date() }]
+          : prev.filter(like => like.user !== user._id)
+      );
+      
+      setError('Failed to update like. Please try again.');
+    } finally {
+      setLikingInProgress(false);
     }
   };
 
   const handleBookmark = async () => {
     if (!user?._id) {
       console.log('❌ User not authenticated');
+      setError('Please login to bookmark this blog');
       return;
     }
 
+    if (bookmarkingInProgress) return;
+    
+    setBookmarkingInProgress(true);
+    setError('');
+    
     try {
       console.log('🔖 Sending bookmark request for blog:', blogId);
+      
+      // Optimistic update
+      const newIsBookmarked = !isBookmarked;
+      setIsBookmarked(newIsBookmarked);
+      
       const response = await apiService.post(`/api/blog/${blogId}/bookmark`, {
         userId: user._id
       });
       
-      console.log('🔖 Bookmark response:', response.data);
-      setIsBookmarked(response.data.isBookmarked);
-      
       // Track engagement
-      trackEngagement('bookmark', blogId);
+      trackEngagement('bookmark', blogId, {
+        action: newIsBookmarked ? 'add' : 'remove'
+      });
+      
+      console.log('🔖 Bookmark action completed:', response.data);
     } catch (err) {
       console.error('❌ Error toggling bookmark:', err);
+      
+      // Revert optimistic update on error
+      setIsBookmarked(!isBookmarked);
+      setError('Failed to update bookmark. Please try again.');
+    } finally {
+      setBookmarkingInProgress(false);
     }
   };
 
   const handleAddComment = async () => {
     if (!newComment.trim() || !user?._id) return;
 
+    if (submittingComment) return;
+    
+    setSubmittingComment(true);
+    setError('');
+    
     try {
-      setSubmittingComment(true);
       console.log('💬 Sending comment request for blog:', blogId);
       
-      const response = await apiService.post(`/api/blog/${blogId}/comment`, {
+      // Optimistic update
+      const optimisticComment = {
+        _id: `temp_${Date.now()}`,
+        user: {
+          _id: user._id,
+          name: user.name,
+          profile: user.profile
+        },
         content: newComment,
+        createdAt: new Date(),
+        likes: [],
+        replies: [],
+        isOptimistic: true
+      };
+      
+      setComments(prev => [...prev, optimisticComment]);
+      const commentContent = newComment;
+      setNewComment('');
+      
+      const response = await apiService.post(`/api/blog/${blogId}/comment`, {
+        content: commentContent,
         userId: user._id,
         parentCommentId: replyTo?._id || null
       });
       
       console.log('💬 Comment response:', response.data);
-      setComments(prev => [...prev, response.data.comment]);
-      setNewComment('');
+      
+      // Replace optimistic comment with real one
+      setComments(prev => prev.map(c => 
+        c._id === optimisticComment._id ? response.data.comment : c
+      ));
+      
       setReplyTo(null);
+      
+      // Emit real-time comment
+      socketService.emitComment(blogId, user._id, commentContent, replyTo?._id);
       
       // Track engagement
       trackEngagement('comment', blogId, {
-        commentLength: newComment.length,
+        commentLength: commentContent.length,
         isReply: !!replyTo
       });
     } catch (err) {
       console.error('❌ Error adding comment:', err);
+      
+      // Remove optimistic comment on error
+      setComments(prev => prev.filter(c => c._id !== optimisticComment._id));
+      setNewComment(commentContent); // Restore comment text
+      setError('Failed to add comment. Please try again.');
     } finally {
       setSubmittingComment(false);
     }
@@ -268,11 +385,40 @@ const BlogInteractions = ({ blogId, authorId, initialLikes = [], initialComments
   const handleShare = async (platform) => {
     if (!user?._id) {
       console.log('❌ User not authenticated');
+      setError('Please login to share this blog');
       return;
     }
 
+    setError('');
+    
     try {
       console.log('📤 Sending share request for blog:', blogId, 'platform:', platform);
+      
+      const blogUrl = `${window.location.origin}/blog/${blogId}`;
+      const blogTitle = document.title || 'Check out this blog';
+      
+      switch (platform) {
+        case 'facebook':
+          window.open(`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(blogUrl)}`, '_blank', 'width=600,height=400');
+          break;
+        case 'twitter':
+          window.open(`https://twitter.com/intent/tweet?url=${encodeURIComponent(blogUrl)}&text=${encodeURIComponent(blogTitle)}`, '_blank', 'width=600,height=400');
+          break;
+        case 'linkedin':
+          window.open(`https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(blogUrl)}`, '_blank', 'width=600,height=400');
+          break;
+        case 'whatsapp':
+          window.open(`https://wa.me/?text=${encodeURIComponent(`${blogTitle} ${blogUrl}`)}`);
+          break;
+        case 'email':
+          window.open(`mailto:?subject=${encodeURIComponent(blogTitle)}&body=${encodeURIComponent(`I thought you might be interested in this blog: ${blogUrl}`)}`);
+          break;
+        case 'copy':
+          await navigator.clipboard.writeText(blogUrl);
+          setShareSuccess(true);
+          setTimeout(() => setShareSuccess(false), 2000);
+          break;
+      }
       
       // Track share in backend
       await apiService.post(`/api/blog/${blogId}/share`, {
@@ -280,28 +426,8 @@ const BlogInteractions = ({ blogId, authorId, initialLikes = [], initialComments
         platform
       });
       
-      const blogUrl = `${window.location.origin}/blog/${blogId}`;
-      
-      switch (platform) {
-        case 'facebook':
-          window.open(`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(blogUrl)}`);
-          break;
-        case 'twitter':
-          window.open(`https://twitter.com/intent/tweet?url=${encodeURIComponent(blogUrl)}`);
-          break;
-        case 'linkedin':
-          window.open(`https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(blogUrl)}`);
-          break;
-        case 'whatsapp':
-          window.open(`https://wa.me/?text=${encodeURIComponent(blogUrl)}`);
-          break;
-        case 'email':
-          window.open(`mailto:?subject=Check out this blog&body=${encodeURIComponent(blogUrl)}`);
-          break;
-        case 'copy':
-          navigator.clipboard.writeText(blogUrl);
-          break;
-      }
+      // Emit real-time share
+      socketService.emitBlogShare(blogId, user._id, platform);
       
       setShareMenuAnchor(null);
       
@@ -309,6 +435,7 @@ const BlogInteractions = ({ blogId, authorId, initialLikes = [], initialComments
       trackEngagement('share', blogId, { platform });
     } catch (err) {
       console.error('❌ Error sharing blog:', err);
+      setError('Failed to share blog. Please try again.');
     }
   };
 
@@ -322,60 +449,100 @@ const BlogInteractions = ({ blogId, authorId, initialLikes = [], initialComments
 
   return (
     <Box>
+      {/* Error Snackbar */}
+      <Snackbar
+        open={!!error}
+        autoHideDuration={4000}
+        onClose={() => setError('')}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert severity="error" onClose={() => setError('')}>
+          {error}
+        </Alert>
+      </Snackbar>
+
+      {/* Share Success Snackbar */}
+      <Snackbar
+        open={shareSuccess}
+        autoHideDuration={2000}
+        onClose={() => setShareSuccess(false)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert severity="success" icon={<CheckIcon />}>
+          Link copied to clipboard!
+        </Alert>
+      </Snackbar>
+
       {/* Interaction Bar */}
       <InteractionBar>
         <Box display="flex" alignItems="center" gap={1}>
-          <InteractionButton
+          <Tooltip title={
+            !user?._id ? "Please login to like" : 
+            (user._id === authorId ? "You can't like your own blog" : 
+            (isLiked ? "Unlike this blog" : "Like this blog"))
+          }>
+            <InteractionButton
             active={isLiked}
             onClick={handleLike}
-            disabled={!user?._id || user._id === authorId}
+            disabled={!user?._id || user._id === authorId || likingInProgress}
             sx={{
               opacity: (!user?._id || user._id === authorId) ? 0.5 : 1,
               cursor: (!user?._id || user._id === authorId) ? 'not-allowed' : 'pointer',
-              '&:hover': {
-                backgroundColor: (!user?._id || user._id === authorId) ? 'transparent' : 'rgba(102, 126, 234, 0.15)',
-                transform: (!user?._id || user._id === authorId) ? 'none' : 'scale(1.1)',
-              }
             }}
-            title={!user?._id ? "Please login to like" : (user._id === authorId ? "You can't like your own blog" : "Like this blog")}
           >
-            {isLiked ? <LikeIcon /> : <LikeOutlineIcon />}
+            {likingInProgress ? (
+              <CircularProgress size={20} />
+            ) : (
+              isLiked ? <LikeIcon /> : <LikeOutlineIcon />
+            )}
           </InteractionButton>
+          </Tooltip>
           <Typography variant="body2" fontWeight={600}>
             {likes.length}
           </Typography>
         </Box>
 
         <Box display="flex" alignItems="center" gap={1}>
-          <InteractionButton onClick={() => setShowComments(!showComments)}>
+          <Tooltip title={showComments ? "Hide comments" : "Show comments"}>
+            <InteractionButton onClick={() => setShowComments(!showComments)}>
             <CommentIcon />
           </InteractionButton>
+          </Tooltip>
           <Typography variant="body2" fontWeight={600}>
             {comments.length}
           </Typography>
         </Box>
 
-        <InteractionButton
+        <Tooltip title={!user?._id ? "Please login to share" : "Share this blog"}>
+          <InteractionButton
           onClick={(e) => setShareMenuAnchor(e.currentTarget)}
           disabled={!user?._id}
-          title={!user?._id ? "Please login to share" : "Share this blog"}
         >
           <ShareIcon />
         </InteractionButton>
+        </Tooltip>
 
-        <InteractionButton
+        <Tooltip title={
+          !user?._id ? "Please login to bookmark" : 
+          (isBookmarked ? "Remove bookmark" : "Bookmark this blog")
+        }>
+          <InteractionButton
           active={isBookmarked}
           onClick={handleBookmark}
-          disabled={!user?._id}
-          title={!user?._id ? "Please login to bookmark" : (isBookmarked ? "Remove bookmark" : "Bookmark this blog")}
+          disabled={!user?._id || bookmarkingInProgress}
         >
-          {isBookmarked ? <BookmarkIcon /> : <BookmarkOutlineIcon />}
+          {bookmarkingInProgress ? (
+            <CircularProgress size={20} />
+          ) : (
+            isBookmarked ? <BookmarkIcon /> : <BookmarkOutlineIcon />
+          )}
         </InteractionButton>
+        </Tooltip>
 
         <Box sx={{ flexGrow: 1 }} />
 
         <Typography variant="body2" color="text.secondary">
-          {likes.length} likes • {comments.length} comments
+          {likes.length} like{likes.length !== 1 ? 's' : ''} • {comments.length} comment{comments.length !== 1 ? 's' : ''}
         </Typography>
       </InteractionBar>
 
@@ -384,6 +551,7 @@ const BlogInteractions = ({ blogId, authorId, initialLikes = [], initialComments
         <LiveComments 
           blogId={blogId}
           allowComments={allowComments}
+          onCommentCountChange={(count) => setComments(prev => ({ ...prev, length: count }))}
         />
       )}
 
@@ -414,7 +582,7 @@ const BlogInteractions = ({ blogId, authorId, initialLikes = [], initialComments
           Email
         </MenuItem>
         <MenuItem onClick={() => handleShare('copy')}>
-          <LinkIcon sx={{ mr: 1 }} />
+          <CopyIcon sx={{ mr: 1 }} />
           Copy Link
         </MenuItem>
       </Menu>

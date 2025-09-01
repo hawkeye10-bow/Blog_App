@@ -160,7 +160,7 @@ const BlogDetail = () => {
   const navigate = useNavigate();
   const { id } = useParams();
   const currentUser = useSelector(state => state.user);
-  const { startTyping, stopTyping, trackEngagement } = useRealTimeFeatures(id);
+  const { startTyping, stopTyping, trackEngagement, joinCollaboration, leaveCollaboration } = useRealTimeFeatures(id);
   const [input, setInput] = useState({
     title: '',
     description: '',
@@ -174,14 +174,80 @@ const BlogDetail = () => {
   const [imageValid, setImageValid] = useState(true);
   const [progress, setProgress] = useState(0);
   const [useCollaborativeEditor, setUseCollaborativeEditor] = useState(false);
+  const [autoSaving, setAutoSaving] = useState(false);
+  const [lastSaved, setLastSaved] = useState(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
   const { handleInputChange, cleanup } = useTypingIndicator('editing');
+  const autoSaveTimeoutRef = useRef(null);
+  const originalDataRef = useRef(null);
 
   // Connect to socket
   useEffect(() => {
     socketService.connect();
+    
+    // Join collaboration when component mounts
+    if (id && currentUser?._id) {
+      joinCollaboration(id);
+    }
+    
     return cleanup;
   }, [cleanup]);
+
+  // Auto-save functionality
+  useEffect(() => {
+    if (!originalDataRef.current) return;
+    
+    const hasChanges = 
+      input.title !== originalDataRef.current.title ||
+      input.description !== originalDataRef.current.description ||
+      input.image !== originalDataRef.current.image;
+    
+    setHasUnsavedChanges(hasChanges);
+    
+    if (hasChanges) {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+      }
+      
+      // Auto-save after 3 seconds of inactivity
+      autoSaveTimeoutRef.current = setTimeout(() => {
+        handleAutoSave();
+      }, 3000);
+    }
+    
+    return () => {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+      }
+    };
+  }, [input]);
+
+  const handleAutoSave = async () => {
+    if (!hasUnsavedChanges || !id) return;
+    
+    try {
+      setAutoSaving(true);
+      console.log('💾 Auto-saving blog changes...');
+      
+      await apiService.put(`/api/blog/update/${id}`, {
+        title: input.title,
+        description: input.description,
+        image: input.image,
+        userId: currentUser._id
+      });
+      
+      setLastSaved(new Date());
+      setHasUnsavedChanges(false);
+      originalDataRef.current = { ...input };
+      
+      console.log('✅ Auto-save completed');
+    } catch (error) {
+      console.error('❌ Auto-save failed:', error);
+    } finally {
+      setAutoSaving(false);
+    }
+  };
 
   // Validate image URL
   useEffect(() => {
@@ -202,13 +268,16 @@ const BlogDetail = () => {
     }));
     
     // Start typing indicator
-    startTyping('editing');
+    if (currentUser?._id) {
+      startTyping('editing');
+    }
     
     if (error) setError("");
   });
 
   const fetchDetails = async () => {
     try {
+      console.log(`📖 Fetching blog details for: ${id}`);
       const userId = localStorage.getItem("userId");
       if (!userId) {
         setError('User not authenticated');
@@ -235,6 +304,13 @@ const BlogDetail = () => {
           image: data.image || '',
         });
         
+        // Store original data for change detection
+        originalDataRef.current = {
+          title: data.title || '',
+          description: data.description || '',
+          image: data.image || '',
+        };
+        
         if (currentUser && data.user && currentUser._id !== data.user._id) {
           setError('You can only edit your own blogs');
         }
@@ -245,8 +321,47 @@ const BlogDetail = () => {
     });
   }, [id, currentUser]);
 
+  // Setup real-time listeners for blog updates
+  useEffect(() => {
+    if (!id) return;
+
+    const handleBlogUpdated = (data) => {
+      if (data.blog._id === id && data.blog.user._id !== currentUser?._id) {
+        console.log('📝 Real-time: Blog updated by another user:', data);
+        
+        // Show notification about external update
+        setError('This blog was updated by another user. Please refresh to see the latest version.');
+      }
+    };
+
+    const handleCollaborationUpdate = (event) => {
+      const data = event.detail;
+      if (data.blogId === id && data.userId !== currentUser?._id) {
+        console.log('🤝 Real-time: Collaboration update received:', data);
+        
+        // Handle real-time content synchronization
+        if (data.operation === 'edit' && useCollaborativeEditor) {
+          // Update content if using collaborative editor
+          setInput(prev => ({
+            ...prev,
+            description: data.content
+          }));
+        }
+      }
+    };
+
+    socketService.addEventListener('blog-updated', handleBlogUpdated);
+    window.addEventListener('collaboration-update', handleCollaborationUpdate);
+
+    return () => {
+      socketService.removeEventListener('blog-updated', handleBlogUpdated);
+      window.removeEventListener('collaboration-update', handleCollaborationUpdate);
+    };
+  }, [id, currentUser?._id, useCollaborativeEditor]);
+
   const sendRequest = async () => {
     try {
+      console.log(`💾 Updating blog: ${id}`);
       const userId = localStorage.getItem("userId");
       if (!userId) {
         throw new Error('User not authenticated');
@@ -256,7 +371,10 @@ const BlogDetail = () => {
         title: input.title,
         description: input.description,
         image: input.image,
+        userId: userId
       });
+      
+      console.log('✅ Blog updated successfully:', res.data);
       return res.data;
     } catch (error) {
       console.error('Error updating blog:', error);
@@ -309,6 +427,9 @@ const BlogDetail = () => {
     try {
       await sendRequest();
       setProgress(100);
+      setHasUnsavedChanges(false);
+      setLastSaved(new Date());
+      originalDataRef.current = { ...input };
       
       // Track engagement
       trackEngagement('edit', id, {
@@ -317,6 +438,16 @@ const BlogDetail = () => {
           description: input.description !== blog?.description,
           image: input.image !== blog?.image
         }
+      });
+      
+      // Emit real-time blog update
+      socketService.emitBlogUpdated({
+        _id: id,
+        title: input.title,
+        description: input.description,
+        image: input.image,
+        user: currentUser,
+        updatedAt: new Date()
       });
       
       Swal.fire({
@@ -334,6 +465,7 @@ const BlogDetail = () => {
     } finally {
       clearInterval(progressInterval);
       setIsSubmitting(false);
+      stopTyping(); // Stop typing indicator
     }
   };
 
@@ -420,6 +552,28 @@ const BlogDetail = () => {
               <Typography variant="body1" color="text.secondary" sx={{ fontSize: '1.1rem' }}>
                 Update your blog post with new content and make it even better
               </Typography>
+              
+              {/* Auto-save status */}
+              {(autoSaving || lastSaved || hasUnsavedChanges) && (
+                <Box mt={2} display="flex" alignItems="center" justifyContent="center" gap={1}>
+                  {autoSaving ? (
+                    <>
+                      <CircularProgress size={16} />
+                      <Typography variant="caption" color="primary">
+                        Auto-saving...
+                      </Typography>
+                    </>
+                  ) : hasUnsavedChanges ? (
+                    <Typography variant="caption" color="warning.main">
+                      You have unsaved changes
+                    </Typography>
+                  ) : lastSaved ? (
+                    <Typography variant="caption" color="success.main">
+                      Auto-saved {formatDistanceToNow(lastSaved, { addSuffix: true })}
+                    </Typography>
+                  ) : null}
+                </Box>
+              )}
             </Box>
 
             {/* Back Button */}
@@ -579,10 +733,13 @@ const BlogDetail = () => {
                         <CollaborativeEditor
                           blogId={id}
                           initialContent={input.description}
-                          onContentChange={(content) => setInput(prev => ({ ...prev, description: content }))}
+                          onContentChange={(content) => {
+                            setInput(prev => ({ ...prev, description: content }));
+                            startTyping('editing');
+                          }}
                           onSave={async (content) => {
                             setInput(prev => ({ ...prev, description: content }));
-                            await sendRequest();
+                            return handleAutoSave();
                           }}
                           readOnly={false}
                         />
@@ -691,6 +848,22 @@ const BlogDetail = () => {
                   </Grid>
                 </Grid>
 
+                {/* Collaboration Status */}
+                {useCollaborativeEditor && (
+                  <Box mt={4} p={3} sx={{ 
+                    background: 'rgba(156, 39, 176, 0.05)', 
+                    borderRadius: 2,
+                    border: '1px solid rgba(156, 39, 176, 0.2)'
+                  }}>
+                    <Typography variant="subtitle2" color="primary" mb={1}>
+                      🤝 Collaborative Editing Active
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Real-time collaboration is enabled. Other editors can see your changes instantly.
+                    </Typography>
+                  </Box>
+                )}
+
                 {/* Blog Preview */}
                 {showPreview && isFormValid && (
                   <Fade in={true}>
@@ -734,6 +907,9 @@ const BlogDetail = () => {
                         <Chip label={`By ${blog?.user?.name || 'You'}`} color="primary" variant="outlined" />
                         <Chip label="Updated" color="warning" variant="outlined" />
                         <Chip label={`${Math.ceil(input.description.split(' ').length / 200)} min read`} color="default" variant="outlined" />
+                        {hasUnsavedChanges && (
+                          <Chip label="Unsaved Changes" color="error" variant="outlined" />
+                        )}
                       </Box>
                     </Box>
                   </Fade>

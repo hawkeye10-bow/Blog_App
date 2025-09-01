@@ -68,35 +68,41 @@ const TypingDots = styled(Box)(({ theme }) => ({
 const LiveTypingIndicators = ({ blogId = null, showGlobal = true }) => {
   const [typingUsers, setTypingUsers] = useState(new Map());
   const [commentingUsers, setCommentingUsers] = useState(new Map());
+  const [collaboratingUsers, setCollaboratingUsers] = useState(new Map());
 
   useEffect(() => {
     const socket = socketService.connect();
 
     // General typing (blog creation/editing)
     const handleUserTyping = (data) => {
-      if (!blogId || showGlobal) {
+      console.log('⌨️ Real-time: User typing:', data);
+      
+      // Show global typing or blog-specific typing
+      if ((!data.blogId && showGlobal) || (data.blogId === blogId)) {
         setTypingUsers(prev => {
           const newMap = new Map(prev);
           newMap.set(data.userId, {
             userName: data.userName,
             action: data.action,
+            blogId: data.blogId,
             timestamp: Date.now()
           });
           return newMap;
         });
 
-        // Auto-remove after 3 seconds
+        // Auto-remove after 4 seconds (slightly longer than server timeout)
         setTimeout(() => {
           setTypingUsers(prev => {
             const newMap = new Map(prev);
             newMap.delete(data.userId);
             return newMap;
           });
-        }, 3000);
+        }, 4000);
       }
     };
 
     const handleUserStoppedTyping = (data) => {
+      console.log('⌨️ Real-time: User stopped typing:', data);
       setTypingUsers(prev => {
         const newMap = new Map(prev);
         newMap.delete(data.userId);
@@ -107,28 +113,31 @@ const LiveTypingIndicators = ({ blogId = null, showGlobal = true }) => {
     // Comment typing (specific to blog)
     const handleUserCommenting = (data) => {
       if (data.blogId === blogId) {
+        console.log('💬 Real-time: User commenting:', data);
         setCommentingUsers(prev => {
           const newMap = new Map(prev);
           newMap.set(data.userId, {
             userName: data.userName,
+            blogId: data.blogId,
             timestamp: Date.now()
           });
           return newMap;
         });
 
-        // Auto-remove after 3 seconds
+        // Auto-remove after 4 seconds
         setTimeout(() => {
           setCommentingUsers(prev => {
             const newMap = new Map(prev);
             newMap.delete(data.userId);
             return newMap;
           });
-        }, 3000);
+        }, 4000);
       }
     };
 
     const handleUserStoppedCommenting = (data) => {
       if (data.blogId === blogId) {
+        console.log('💬 Real-time: User stopped commenting:', data);
         setCommentingUsers(prev => {
           const newMap = new Map(prev);
           newMap.delete(data.userId);
@@ -137,17 +146,60 @@ const LiveTypingIndicators = ({ blogId = null, showGlobal = true }) => {
       }
     };
 
+    // Collaboration typing
+    const handleCollaboratorTyping = (data) => {
+      if (data.blogId === blogId) {
+        console.log('🤝 Real-time: Collaborator typing:', data);
+        setCollaboratingUsers(prev => {
+          const newMap = new Map(prev);
+          newMap.set(data.userId, {
+            userName: data.userName,
+            action: 'collaborating',
+            blogId: data.blogId,
+            timestamp: Date.now()
+          });
+          return newMap;
+        });
+
+        // Auto-remove after 4 seconds
+        setTimeout(() => {
+          setCollaboratingUsers(prev => {
+            const newMap = new Map(prev);
+            newMap.delete(data.userId);
+            return newMap;
+          });
+        }, 4000);
+      }
+    };
+
+    const handleCollaboratorStoppedTyping = (data) => {
+      if (data.blogId === blogId) {
+        console.log('🤝 Real-time: Collaborator stopped typing:', data);
+        setCollaboratingUsers(prev => {
+          const newMap = new Map(prev);
+          newMap.delete(data.userId);
+          return newMap;
+        });
+      }
+    };
+
     // Register event listeners
-    socket.on('user-typing', handleUserTyping);
-    socket.on('user-stopped-typing', handleUserStoppedTyping);
-    socket.on('user-commenting', handleUserCommenting);
-    socket.on('user-stopped-commenting', handleUserStoppedCommenting);
+    socketService.addEventListener('user-typing', handleUserTyping);
+    socketService.addEventListener('user-stopped-typing', handleUserStoppedTyping);
+    socketService.addEventListener('user-commenting', handleUserCommenting);
+    socketService.addEventListener('user-stopped-commenting', handleUserStoppedCommenting);
+    socketService.addEventListener('collaboration-update', handleCollaboratorTyping);
+    socketService.addEventListener('collaborator-joined', handleCollaboratorTyping);
+    socketService.addEventListener('collaborator-left', handleCollaboratorStoppedTyping);
 
     return () => {
-      socket.off('user-typing', handleUserTyping);
-      socket.off('user-stopped-typing', handleUserStoppedTyping);
-      socket.off('user-commenting', handleUserCommenting);
-      socket.off('user-stopped-commenting', handleUserStoppedCommenting);
+      socketService.removeEventListener('user-typing', handleUserTyping);
+      socketService.removeEventListener('user-stopped-typing', handleUserStoppedTyping);
+      socketService.removeEventListener('user-commenting', handleUserCommenting);
+      socketService.removeEventListener('user-stopped-commenting', handleUserStoppedCommenting);
+      socketService.removeEventListener('collaboration-update', handleCollaboratorTyping);
+      socketService.removeEventListener('collaborator-joined', handleCollaboratorTyping);
+      socketService.removeEventListener('collaborator-left', handleCollaboratorStoppedTyping);
     };
   }, [blogId, showGlobal]);
 
@@ -165,14 +217,34 @@ const LiveTypingIndicators = ({ blogId = null, showGlobal = true }) => {
       case 'creating': return 'creating a blog';
       case 'editing': return 'editing a blog';
       case 'commenting': return 'writing a comment';
+      case 'collaborating': return 'collaborating on a blog';
       default: return 'typing';
     }
   };
 
+  const getActionColor = (action) => {
+    switch (action) {
+      case 'creating': return '#4caf50';
+      case 'editing': return '#ff9800';
+      case 'commenting': return '#2196f3';
+      case 'collaborating': return '#9c27b0';
+      default: return '#667eea';
+    }
+  };
+
   const allTypingUsers = [
-    ...Array.from(typingUsers.values()).map(user => ({ ...user, type: 'general' })),
-    ...Array.from(commentingUsers.values()).map(user => ({ ...user, type: 'comment', action: 'commenting' }))
+    ...Array.from(typingUsers.values()).map(user => ({ ...user, type: 'general', priority: 1 })),
+    ...Array.from(commentingUsers.values()).map(user => ({ ...user, type: 'comment', action: 'commenting', priority: 2 })),
+    ...Array.from(collaboratingUsers.values()).map(user => ({ ...user, type: 'collaboration', priority: 3 }))
   ];
+
+  // Sort by priority and timestamp
+  allTypingUsers.sort((a, b) => {
+    if (a.priority !== b.priority) {
+      return b.priority - a.priority; // Higher priority first
+    }
+    return b.timestamp - a.timestamp; // More recent first
+  });
 
   if (allTypingUsers.length === 0) {
     return null;
@@ -182,17 +254,19 @@ const LiveTypingIndicators = ({ blogId = null, showGlobal = true }) => {
     <Slide direction="up" in={true}>
       <TypingContainer>
         <Typography variant="subtitle2" fontWeight={600} mb={2} color="primary">
-          Live Activity
+          ⚡ Live Activity
         </Typography>
         
         {allTypingUsers.map((typingUser, index) => (
           <Fade in={true} key={`${typingUser.userName}-${typingUser.timestamp}`}>
-            <TypingIndicator>
+            <TypingIndicator sx={{
+              borderLeft: `3px solid ${getActionColor(typingUser.action)}`,
+            }}>
               <Avatar
                 sx={{ 
                   width: 28, 
                   height: 28,
-                  background: 'linear-gradient(135deg, #667eea, #764ba2)',
+                  background: `linear-gradient(135deg, ${getActionColor(typingUser.action)}, #764ba2)`,
                   fontSize: '0.8rem',
                   fontWeight: 600
                 }}
@@ -206,11 +280,16 @@ const LiveTypingIndicators = ({ blogId = null, showGlobal = true }) => {
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
                   {getActionText(typingUser.action)}
+                  {typingUser.blogId && typingUser.blogId !== blogId && (
+                    <span> in another blog</span>
+                  )}
                 </Typography>
               </Box>
               
               <Box display="flex" alignItems="center" gap={1}>
-                {getActionIcon(typingUser.action)}
+                <Box sx={{ color: getActionColor(typingUser.action) }}>
+                  {getActionIcon(typingUser.action)}
+                </Box>
                 <TypingDots>
                   <div className="dot" />
                   <div className="dot" />

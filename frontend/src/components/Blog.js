@@ -253,13 +253,45 @@ import { useRealTimeBlogView } from '../hooks/useRealTimeFeatures';
   
   const Blog = ({ title, description, imageURL, userName, isUser, id, imageFitMode = 'contain', authorId, likes = [], comments = [], likeCount = 0, commentCount = 0 }) => {
     const navigate = useNavigate();
-    const { currentViewers, liveStats, trackEngagement } = useRealTimeBlogView(id);
+    const { currentViewers, liveStats, timeOnPage, scrollDepth, trackEngagement } = useRealTimeBlogView(id);
+    const [isViewing, setIsViewing] = useState(false);
+    const [viewStartTime] = useState(Date.now());
+    
+    // Track when user starts viewing this blog
+    useEffect(() => {
+      if (id && !isViewing) {
+        console.log(`👁️ Started viewing blog: ${id}`);
+        setIsViewing(true);
+        
+        // Track initial view
+        trackEngagement('view', id, {
+          viewType: 'start',
+          timestamp: new Date()
+        });
+      }
+      
+      return () => {
+        if (isViewing) {
+          console.log(`👁️ Stopped viewing blog: ${id}`);
+          const finalTimeOnPage = Math.round((Date.now() - viewStartTime) / 1000);
+          
+          // Track view completion
+          trackEngagement('view', id, {
+            viewType: 'end',
+            timeOnPage: finalTimeOnPage,
+            timestamp: new Date()
+          });
+        }
+      };
+    }, [id, isViewing, trackEngagement, viewStartTime]);
     
     const handleEdit = () => {
+      console.log(`✏️ Editing blog: ${id}`);
       navigate(`/myblogs/${id}`);
     };
   
     const deleteRequest = async () => {
+      console.log(`🗑️ Deleting blog: ${id}`);
       const res = await apiService.delete(`/api/blog/${id}`).catch(err => console.log(err));
       const data = await res.data;
       return data;
@@ -286,6 +318,9 @@ import { useRealTimeBlogView } from '../hooks/useRealTimeFeatures';
         if (result.isConfirmed) {
           deleteRequest()
             .then(() => {
+              // Emit real-time deletion
+              socketService.emitBlogDeleted(id);
+              
               Swal.fire({
                 title: 'Deleted!',
                 text: 'Your blog post has been deleted.',
@@ -454,7 +489,7 @@ import { useRealTimeBlogView } from '../hooks/useRealTimeFeatures';
               blogId={id}
               compact={true}
               showViewers={true}
-              showActivity={false}
+              showActivity={true}
             />
           </Box>
         </StyledCard>

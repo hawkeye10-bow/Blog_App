@@ -100,8 +100,10 @@ const LiveComments = ({ blogId, allowComments = true }) => {
   const [typingUsers, setTypingUsers] = useState([]);
   
   const commentInputRef = useRef(null);
+  const [optimisticComments, setOptimisticComments] = useState(new Map());
   const typingTimeoutRef = useRef(null);
 
+  const typingTimeoutRef = useRef(null);
   // Fetch comments
   useEffect(() => {
     fetchComments();
@@ -128,10 +130,36 @@ const LiveComments = ({ blogId, allowComments = true }) => {
   const setupRealTimeComments = () => {
     const socket = socketService.connect();
 
+    // Join blog room for comment updates
+    socketService.joinBlogRoom(blogId, user?._id);
+
     // New comment
     socket.on('new-comment', (data) => {
       if (data.blogId === blogId) {
-        setComments(prev => [...prev, data.comment]);
+        console.log('💬 Real-time: New comment received:', data);
+        
+        // Remove optimistic comment if it exists
+        setOptimisticComments(prev => {
+          const newMap = new Map(prev);
+          // Find and remove optimistic comment with same content
+          for (const [id, comment] of newMap.entries()) {
+            if (comment.content === data.comment.content && comment.user._id === data.comment.user._id) {
+              newMap.delete(id);
+              break;
+            }
+          }
+          return newMap;
+        });
+        
+        // Add real comment
+        setComments(prev => {
+          // Check if comment already exists (avoid duplicates)
+          const exists = prev.some(c => c._id === data.comment._id);
+          if (!exists) {
+            return [...prev, data.comment];
+          }
+          return prev;
+        });
         
         // Show notification if not from current user
         if (data.comment.user._id !== user?._id) {
@@ -149,6 +177,7 @@ const LiveComments = ({ blogId, allowComments = true }) => {
     // Comment updated
     socket.on('comment-updated', (data) => {
       if (data.blogId === blogId) {
+        console.log('💬 Real-time: Comment updated:', data);
         setComments(prev => prev.map(c => 
           c._id === data.comment._id ? data.comment : c
         ));
@@ -158,6 +187,7 @@ const LiveComments = ({ blogId, allowComments = true }) => {
     // Comment deleted
     socket.on('comment-deleted', (data) => {
       if (data.blogId === blogId) {
+        console.log('💬 Real-time: Comment deleted:', data);
         setComments(prev => prev.filter(c => c._id !== data.commentId));
       }
     });
@@ -165,6 +195,7 @@ const LiveComments = ({ blogId, allowComments = true }) => {
     // Comment liked
     socket.on('comment-liked', (data) => {
       if (data.blogId === blogId) {
+        console.log('💬 Real-time: Comment liked:', data);
         setComments(prev => prev.map(c => 
           c._id === data.commentId 
             ? { ...c, likes: data.likes }
@@ -176,6 +207,7 @@ const LiveComments = ({ blogId, allowComments = true }) => {
     // Typing indicators
     socket.on('user-commenting', (data) => {
       if (data.blogId === blogId && data.userId !== user?._id) {
+        console.log('⌨️ Real-time: User commenting:', data);
         setTypingUsers(prev => {
           const filtered = prev.filter(u => u.userId !== data.userId);
           return [...filtered, data];
@@ -185,6 +217,7 @@ const LiveComments = ({ blogId, allowComments = true }) => {
 
     socket.on('user-stopped-commenting', (data) => {
       if (data.blogId === blogId) {
+        console.log('⌨️ Real-time: User stopped commenting:', data);
         setTypingUsers(prev => prev.filter(u => u.userId !== data.userId));
       }
     });
@@ -193,7 +226,7 @@ const LiveComments = ({ blogId, allowComments = true }) => {
   const handleCommentChange = (e) => {
     setNewComment(e.target.value);
     
-    // Emit typing indicator
+    // Emit typing indicator with debouncing
     if (user?._id) {
       socketService.emitCommentTyping(blogId, user._id, user.name);
       
@@ -205,37 +238,80 @@ const LiveComments = ({ blogId, allowComments = true }) => {
       // Set timeout to stop typing
       typingTimeoutRef.current = setTimeout(() => {
         socketService.emitCommentStoppedTyping(blogId, user._id);
-      }, 2000);
+      }, 1500); // Reduced timeout for more responsive indicators
     }
   };
 
   const handleSubmitComment = async (e) => {
     e.preventDefault();
     if (!newComment.trim() || !user?._id) return;
+    
+    if (isSubmitting) return;
 
     setSubmitting(true);
+    setError('');
+    
     try {
-      const response = await apiService.post(`/api/blog/${blogId}/comment`, {
+      // Create optimistic comment
+      const optimisticId = `optimistic_${Date.now()}`;
+      const optimisticComment = {
+        _id: optimisticId,
+        user: {
+          _id: user._id,
+          name: user.name,
+          profile: user.profile
+        },
         content: newComment.trim(),
+        createdAt: new Date(),
+        likes: [],
+        replies: [],
+        isOptimistic: true,
+        parentComment: replyTo?._id || null
+      };
+      
+      // Add optimistic comment to map
+      setOptimisticComments(prev => new Map(prev.set(optimisticId, optimisticComment)));
+      
+      const commentContent = newComment.trim();
+      const parentId = replyTo?._id || null;
+      
+      // Clear form immediately for better UX
+      setNewComment('');
+      setReplyTo(null);
+      
+      // Stop typing indicator
+      socketService.emitCommentStoppedTyping(blogId, user._id);
+      
+      const response = await apiService.post(`/api/blog/${blogId}/comment`, {
+        content: commentContent,
         userId: user._id,
-        parentCommentId: replyTo?._id || null
+        parentCommentId: parentId
       });
 
       if (response.data.success) {
-        setNewComment('');
-        setReplyTo(null);
-        
-        // Track engagement
-        trackEngagement('comment', blogId, {
-          commentLength: newComment.length,
-          isReply: !!replyTo
+        // Remove optimistic comment
+        setOptimisticComments(prev => {
+          const newMap = new Map(prev);
+          newMap.delete(optimisticId);
+          return newMap;
         });
-
-        // Stop typing indicator
+        
         socketService.emitCommentStoppedTyping(blogId, user._id);
       }
     } catch (error) {
       console.error('Error adding comment:', error);
+      
+      // Remove optimistic comment on error
+      setOptimisticComments(prev => {
+        const newMap = new Map(prev);
+        newMap.delete(optimisticId);
+        return newMap;
+      });
+      
+      // Restore form state
+      setNewComment(commentContent);
+      setReplyTo(replyTo);
+      
       setError('Failed to add comment');
     } finally {
       setSubmitting(false);
@@ -246,11 +322,31 @@ const LiveComments = ({ blogId, allowComments = true }) => {
     if (!user?._id) return;
 
     try {
+      // Optimistic update
+      const isCurrentlyLiked = comment.likes?.some(like => like.user === user._id);
+      const newLikes = isCurrentlyLiked 
+        ? comment.likes.filter(like => like.user !== user._id)
+        : [...(comment.likes || []), { user: user._id, createdAt: new Date() }];
+      
+      // Update comment locally
+      setComments(prev => prev.map(c => 
+        c._id === comment._id 
+          ? { ...c, likes: newLikes }
+          : c
+      ));
+      
       await apiService.post(`/api/blog/comment/${comment._id}/like`, {
         userId: user._id
       });
+      
+      // The real update will come via socket event
     } catch (error) {
       console.error('Error liking comment:', error);
+      
+      // Revert optimistic update on error
+      setComments(prev => prev.map(c => 
+        c._id === comment._id ? comment : c
+      ));
     }
   };
 
@@ -420,11 +516,13 @@ const LiveComments = ({ blogId, allowComments = true }) => {
                     size="small"
                     startIcon={isExpanded ? <CollapseIcon /> : <ExpandIcon />}
                     onClick={() => toggleReplies(comment._id)}
+                    disabled={isOptimistic}
+                    disabled={isOptimistic}
                   >
                     {isExpanded ? 'Hide' : 'Show'} {comment.replies.length} replies
                   </Button>
                 </Box>
-              )}
+                  {canModifyComment(comment) && !isOptimistic && (
             </Box>
           </Box>
 
@@ -441,6 +539,17 @@ const LiveComments = ({ blogId, allowComments = true }) => {
     );
   };
 
+  // Combine real comments with optimistic comments for display
+  const getAllComments = () => {
+    const realComments = comments.filter(c => !c.isDeleted && !c.parentComment);
+    const optimisticArray = Array.from(optimisticComments.values());
+    
+    return [...realComments, ...optimisticArray].sort((a, b) => 
+      new Date(a.createdAt) - new Date(b.createdAt)
+    );
+  };
+
+    const isOptimistic = comment.isOptimistic || optimisticComments.has(comment._id);
   if (loading) {
     return (
       <Box display="flex" justifyContent="center" p={3}>
@@ -484,7 +593,10 @@ const LiveComments = ({ blogId, allowComments = true }) => {
             <Box display="flex" alignItems="flex-start" gap={2} mb={2}>
               <Avatar
                 src={user.profile?.profilePicture}
-                sx={{ width: 40, height: 40 }}
+        <CommentItem level={level} sx={{ 
+          opacity: isOptimistic ? 0.7 : 1,
+          border: isOptimistic ? '1px dashed #ccc' : 'none'
+        }}>
               >
                 {user.name?.charAt(0)}
               </Avatar>
@@ -503,6 +615,9 @@ const LiveComments = ({ blogId, allowComments = true }) => {
                       Cancel
                     </Button>
                   </Box>
+                )}
+                {isOptimistic && (
+                  <Chip label="Sending..." size="small" color="info" variant="outlined" />
                 )}
 
                 <form onSubmit={handleSubmitComment}>
@@ -546,16 +661,14 @@ const LiveComments = ({ blogId, allowComments = true }) => {
 
         {/* Comments List */}
         <Box>
-          {comments.length === 0 ? (
+          {getAllComments().length === 0 ? (
             <Box textAlign="center" py={4}>
               <Typography variant="body2" color="text.secondary">
                 No comments yet. Be the first to comment!
               </Typography>
             </Box>
           ) : (
-            comments
-              .filter(c => !c.isDeleted && !c.parentComment) // Only top-level comments
-              .map(comment => renderComment(comment))
+            getAllComments().map(comment => renderComment(comment))
           )}
         </Box>
       </CardContent>

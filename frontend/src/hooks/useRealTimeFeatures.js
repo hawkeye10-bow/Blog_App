@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useSelector } from 'react-redux';
 import socketService from '../services/socketService';
-import realtimeService from '../services/realtimeService';
+import apiService from '../services/apiService';
 
 export const useRealTimeFeatures = (blogId = null) => {
   const user = useSelector(state => state.user);
@@ -20,17 +20,35 @@ export const useRealTimeFeatures = (blogId = null) => {
   const [isConnected, setIsConnected] = useState(false);
   const [notifications, setNotifications] = useState([]);
 
-  // Initialize real-time features
+  // Initialize real-time features with enhanced tracking
   useEffect(() => {
     if (user?._id) {
-      realtimeService.initialize(user._id);
+      // Set current user in socket service
+      socketService.setCurrentUser(user._id, user.name);
+      
+      // Join user room for personal notifications
+      socketService.joinUserRoom(user._id);
+      
       setupEventListeners();
       
       return () => {
-        realtimeService.cleanup();
+        cleanup();
       };
     }
   }, [user]);
+
+  // Join blog-specific rooms when blogId changes
+  useEffect(() => {
+    if (blogId && user?._id) {
+      socketService.joinBlogRoom(blogId, user._id);
+      socketService.joinAnalyticsRoom(blogId);
+      
+      return () => {
+        socketService.leaveBlogRoom(blogId, user._id);
+        socketService.leaveAnalyticsRoom(blogId);
+      };
+    }
+  }, [blogId, user?._id]);
 
   // Setup event listeners for real-time updates
   const setupEventListeners = useCallback(() => {
@@ -42,7 +60,8 @@ export const useRealTimeFeatures = (blogId = null) => {
 
     // Blog view updates
     const handleBlogViewUpdate = (data) => {
-      if (!blogId || data.blogId === blogId) {
+      console.log('👁️ Real-time: Blog view update received:', data);
+      if (data.blogId === blogId) {
         setRealTimeData(prev => ({
           ...prev,
           currentViewers: data.currentViewers,
@@ -56,7 +75,8 @@ export const useRealTimeFeatures = (blogId = null) => {
 
     // Engagement updates
     const handleEngagementUpdate = (data) => {
-      if (!blogId || data.blogId === blogId) {
+      console.log('📊 Real-time: Engagement update received:', data);
+      if (data.blogId === blogId) {
         setRealTimeData(prev => ({
           ...prev,
           recentActivity: [data, ...prev.recentActivity.slice(0, 19)],
@@ -70,6 +90,7 @@ export const useRealTimeFeatures = (blogId = null) => {
 
     // User presence updates
     const handleUserPresenceUpdate = (data) => {
+      console.log('👤 Real-time: User presence update:', data);
       setRealTimeData(prev => ({
         ...prev,
         activeUsers: prev.activeUsers.map(user => 
@@ -82,6 +103,7 @@ export const useRealTimeFeatures = (blogId = null) => {
 
     // Typing indicators
     const handleUserTyping = (data) => {
+      console.log('⌨️ Real-time: User typing:', data);
       setRealTimeData(prev => ({
         ...prev,
         typingUsers: [
@@ -101,6 +123,7 @@ export const useRealTimeFeatures = (blogId = null) => {
 
     // Collaboration updates
     const handleCollaborationUpdate = (data) => {
+      console.log('🤝 Real-time: Collaboration update:', data);
       window.dispatchEvent(new CustomEvent('collaboration-update', {
         detail: data
       }));
@@ -108,6 +131,7 @@ export const useRealTimeFeatures = (blogId = null) => {
 
     // New notifications
     const handleNewNotification = (notification) => {
+      console.log('🔔 Real-time: New notification:', notification);
       setNotifications(prev => [notification, ...prev.slice(0, 49)]);
       
       // Show browser notification
@@ -120,29 +144,58 @@ export const useRealTimeFeatures = (blogId = null) => {
     };
 
     // Register event listeners
-    socket.on('blog-view-updated', handleBlogViewUpdate);
-    socket.on('engagement-updated', handleEngagementUpdate);
-    socket.on('user-presence-updated', handleUserPresenceUpdate);
-    socket.on('user-typing', handleUserTyping);
-    socket.on('content-collaboration', handleCollaborationUpdate);
-    socket.on('new-notification', handleNewNotification);
+    socketService.addEventListener('blog-view-updated', handleBlogViewUpdate);
+    socketService.addEventListener('engagement-updated', handleEngagementUpdate);
+    socketService.addEventListener('user-presence-updated', handleUserPresenceUpdate);
+    socketService.addEventListener('user-typing', handleUserTyping);
+    socketService.addEventListener('content-collaboration', handleCollaborationUpdate);
+    socketService.addEventListener('new-notification', handleNewNotification);
+    socketService.addEventListener('viewer-joined', handleBlogViewUpdate);
+    socketService.addEventListener('viewer-left', handleBlogViewUpdate);
+    socketService.addEventListener('analytics-updated', handleEngagementUpdate);
 
     return () => {
-      socket.off('blog-view-updated', handleBlogViewUpdate);
-      socket.off('engagement-updated', handleEngagementUpdate);
-      socket.off('user-presence-updated', handleUserPresenceUpdate);
-      socket.off('user-typing', handleUserTyping);
-      socket.off('content-collaboration', handleCollaborationUpdate);
-      socket.off('new-notification', handleNewNotification);
+      socketService.removeEventListener('blog-view-updated', handleBlogViewUpdate);
+      socketService.removeEventListener('engagement-updated', handleEngagementUpdate);
+      socketService.removeEventListener('user-presence-updated', handleUserPresenceUpdate);
+      socketService.removeEventListener('user-typing', handleUserTyping);
+      socketService.removeEventListener('content-collaboration', handleCollaborationUpdate);
+      socketService.removeEventListener('new-notification', handleNewNotification);
+      socketService.removeEventListener('viewer-joined', handleBlogViewUpdate);
+      socketService.removeEventListener('viewer-left', handleBlogViewUpdate);
+      socketService.removeEventListener('analytics-updated', handleEngagementUpdate);
     };
   }, [blogId]);
+
+  // Cleanup function
+  const cleanup = useCallback(() => {
+    if (user?._id) {
+      socketService.leaveUserRoom(user._id);
+    }
+    if (blogId && user?._id) {
+      socketService.leaveBlogRoom(blogId, user._id);
+      socketService.leaveAnalyticsRoom(blogId);
+    }
+    socketService.removeAllListeners();
+  }, [user?._id, blogId]);
 
   // Track blog view
   const trackView = useCallback(async (targetBlogId, additionalData = {}) => {
     if (!user?._id) return;
     
     try {
-      await realtimeService.trackBlogView(targetBlogId || blogId, additionalData);
+      const viewData = {
+        timeOnPage: additionalData.timeOnPage || 0,
+        scrollDepth: additionalData.scrollDepth || 0,
+        referrer: document.referrer,
+        ...additionalData
+      };
+      
+      // Track via API
+      await apiService.post(`/api/analytics/track/pageview/${targetBlogId || blogId}`, viewData);
+      
+      // Track via socket for real-time updates
+      socketService.trackDetailedView(targetBlogId || blogId, viewData);
     } catch (error) {
       console.error('Error tracking view:', error);
     }
@@ -153,7 +206,20 @@ export const useRealTimeFeatures = (blogId = null) => {
     if (!user?._id) return;
     
     try {
-      await realtimeService.trackEngagement(targetBlogId || blogId, action, metadata);
+      const engagementData = {
+        action,
+        metadata: {
+          ...metadata,
+          timestamp: new Date(),
+          url: window.location.href
+        }
+      };
+      
+      // Track via API
+      await apiService.post(`/api/analytics/track/engagement/${targetBlogId || blogId}`, engagementData);
+      
+      // Track via socket for real-time updates
+      socketService.trackEngagement(targetBlogId || blogId, action, metadata);
     } catch (error) {
       console.error('Error tracking engagement:', error);
     }
@@ -163,6 +229,7 @@ export const useRealTimeFeatures = (blogId = null) => {
   const startTyping = useCallback((action = 'typing') => {
     if (!user?._id) return;
     
+    console.log(`⌨️ Starting typing indicator: ${action}`);
     socketService.emitUserTyping(user._id, user.name, action);
   }, [user]);
 
@@ -170,6 +237,7 @@ export const useRealTimeFeatures = (blogId = null) => {
   const stopTyping = useCallback(() => {
     if (!user?._id) return;
     
+    console.log(`⌨️ Stopping typing indicator`);
     socketService.emitUserStoppedTyping(user._id);
   }, [user]);
 
@@ -177,27 +245,31 @@ export const useRealTimeFeatures = (blogId = null) => {
   const joinCollaboration = useCallback((targetBlogId) => {
     if (!user?._id) return;
     
-    realtimeService.startCollaboration(targetBlogId || blogId);
+    console.log(`🤝 Joining collaboration for blog: ${targetBlogId || blogId}`);
+    socketService.joinCollaboration(targetBlogId || blogId, user._id, user.name);
   }, [user, blogId]);
 
   // Leave blog collaboration
   const leaveCollaboration = useCallback((targetBlogId) => {
     if (!user?._id) return;
     
-    realtimeService.endCollaboration(targetBlogId || blogId);
+    console.log(`🤝 Leaving collaboration for blog: ${targetBlogId || blogId}`);
+    socketService.leaveCollaboration(targetBlogId || blogId, user._id, user.name);
   }, [user, blogId]);
 
   // Send content change for collaboration
   const sendContentChange = useCallback((content, operation = 'edit', position = 0) => {
     if (!user?._id || !blogId) return;
     
-    realtimeService.sendContentChange(blogId, content, operation, position);
+    console.log(`📝 Sending content change: ${operation}`);
+    socketService.emitContentChange(blogId, user._id, user.name, content, operation, position);
   }, [user, blogId]);
 
   // Get real-time statistics
   const getRealTimeStats = useCallback(async (targetBlogId) => {
     try {
-      return await realtimeService.getRealTimeBlogStats(targetBlogId || blogId);
+      const response = await apiService.get(`/api/realtime/blog/${targetBlogId || blogId}/stats`);
+      return response.data.stats;
     } catch (error) {
       console.error('Error getting real-time stats:', error);
       return null;
@@ -224,7 +296,16 @@ export const useRealTimeFeatures = (blogId = null) => {
   // Send notification
   const sendNotification = useCallback(async (recipientId, type, title, message, data = {}) => {
     try {
-      await realtimeService.sendNotification(recipientId, type, title, message, data);
+      await apiService.post('/api/realtime/notification', {
+        recipientId,
+        type,
+        title,
+        message,
+        data
+      });
+      
+      // Also emit via socket for immediate delivery
+      socketService.sendNotification(recipientId, type, title, message, user._id, data.blogId);
     } catch (error) {
       console.error('Error sending notification:', error);
     }
@@ -251,17 +332,35 @@ export const useRealTimeBlogView = (blogId) => {
   const { trackView, trackEngagement, realTimeData } = useRealTimeFeatures(blogId);
   const [viewStartTime] = useState(Date.now());
   const [scrollDepth, setScrollDepth] = useState(0);
+  const [timeOnPage, setTimeOnPage] = useState(0);
+  const [interactions, setInteractions] = useState([]);
   const hasTrackedView = useRef(false);
+  const viewTrackingInterval = useRef(null);
 
   // Track initial view
   useEffect(() => {
     if (blogId && !hasTrackedView.current) {
-      trackView(blogId);
+      console.log(`👁️ Tracking initial view for blog: ${blogId}`);
+      trackView(blogId, {
+        viewType: 'initial',
+        timestamp: new Date()
+      });
       hasTrackedView.current = true;
+      
+      // Start time tracking
+      viewTrackingInterval.current = setInterval(() => {
+        setTimeOnPage(Math.round((Date.now() - viewStartTime) / 1000));
+      }, 1000);
     }
+    
+    return () => {
+      if (viewTrackingInterval.current) {
+        clearInterval(viewTrackingInterval.current);
+      }
+    };
   }, [blogId, trackView]);
 
-  // Track scroll depth
+  // Track scroll depth and user interactions
   useEffect(() => {
     const handleScroll = () => {
       const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
@@ -272,7 +371,19 @@ export const useRealTimeBlogView = (blogId) => {
       setScrollDepth(prev => Math.max(prev, currentScrollDepth));
     };
 
+    const handleClick = (e) => {
+      setInteractions(prev => [...prev, {
+        type: 'click',
+        x: e.clientX,
+        y: e.clientY,
+        target: e.target.tagName,
+        timestamp: Date.now()
+      }]);
+    };
+
     window.addEventListener('scroll', handleScroll);
+    document.addEventListener('click', handleClick);
+    
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
@@ -280,19 +391,29 @@ export const useRealTimeBlogView = (blogId) => {
   useEffect(() => {
     return () => {
       if (blogId && hasTrackedView.current) {
-        const timeOnPage = Math.round((Date.now() - viewStartTime) / 1000);
+        const finalTimeOnPage = Math.round((Date.now() - viewStartTime) / 1000);
+        
+        console.log(`👁️ Tracking view completion for blog: ${blogId}`);
+        console.log(`⏱️ Time on page: ${finalTimeOnPage}s, Scroll depth: ${scrollDepth}%`);
+        
+        // Track final view data
         trackView(blogId, {
-          timeOnPage,
+          timeOnPage: finalTimeOnPage,
           scrollDepth,
-          completed: true
+          completed: true,
+          interactions: interactions.length,
+          viewType: 'exit'
         });
       }
     };
-  }, [blogId, trackView, viewStartTime, scrollDepth]);
+  }, [blogId, trackView, viewStartTime, scrollDepth, interactions]);
 
   return {
     currentViewers: realTimeData.currentViewers,
     liveStats: realTimeData.liveStats,
+    timeOnPage,
+    scrollDepth,
+    interactions: interactions.length,
     trackEngagement: (action, metadata) => trackEngagement(action, blogId, metadata)
   };
 };
@@ -301,9 +422,12 @@ export const useRealTimeCollaboration = (blogId) => {
   const { joinCollaboration, leaveCollaboration, sendContentChange, realTimeData } = useRealTimeFeatures(blogId);
   const [collaborators, setCollaborators] = useState([]);
   const [isCollaborating, setIsCollaborating] = useState(false);
+  const [contentConflicts, setContentConflicts] = useState([]);
+  const [lastSyncTime, setLastSyncTime] = useState(Date.now());
 
   useEffect(() => {
     if (blogId) {
+      console.log(`🤝 Starting collaboration for blog: ${blogId}`);
       joinCollaboration(blogId);
       setIsCollaborating(true);
 
@@ -311,6 +435,7 @@ export const useRealTimeCollaboration = (blogId) => {
       const handleCollaborationUpdate = (event) => {
         const { detail } = event;
         if (detail.blogId === blogId) {
+          console.log(`🤝 Collaboration update received:`, detail);
           // Handle content updates from other collaborators
           window.dispatchEvent(new CustomEvent('content-sync', {
             detail: detail
@@ -320,6 +445,7 @@ export const useRealTimeCollaboration = (blogId) => {
 
       const handleCollaborationChange = (event) => {
         const { detail } = event;
+        console.log(`🤝 Collaboration change:`, detail);
         if (detail.type === 'user-joined') {
           setCollaborators(prev => [...prev, detail.data]);
         } else if (detail.type === 'user-left') {
@@ -331,6 +457,7 @@ export const useRealTimeCollaboration = (blogId) => {
       window.addEventListener('collaboration-change', handleCollaborationChange);
 
       return () => {
+        console.log(`🤝 Ending collaboration for blog: ${blogId}`);
         leaveCollaboration(blogId);
         setIsCollaborating(false);
         window.removeEventListener('collaboration-update', handleCollaborationUpdate);
@@ -341,15 +468,42 @@ export const useRealTimeCollaboration = (blogId) => {
 
   const handleContentChange = useCallback((content, operation = 'edit', position = 0) => {
     if (isCollaborating) {
+      console.log(`📝 Handling content change: ${operation} at position ${position}`);
       sendContentChange(content, operation, position);
+      setLastSyncTime(Date.now());
     }
   }, [isCollaborating, sendContentChange]);
+
+  // Detect and handle content conflicts
+  const handleContentConflict = useCallback((incomingContent, localContent) => {
+    if (incomingContent !== localContent) {
+      const conflict = {
+        id: Date.now(),
+        incomingContent,
+        localContent,
+        timestamp: new Date()
+      };
+      
+      setContentConflicts(prev => [...prev, conflict]);
+      console.warn(`⚠️ Content conflict detected:`, conflict);
+    }
+  }, []);
+
+  // Resolve content conflict
+  const resolveConflict = useCallback((conflictId, resolution) => {
+    setContentConflicts(prev => prev.filter(c => c.id !== conflictId));
+    console.log(`✅ Content conflict resolved: ${resolution}`);
+  }, []);
 
   return {
     collaborators,
     isCollaborating,
     typingUsers: realTimeData.typingUsers,
-    handleContentChange
+    contentConflicts,
+    lastSyncTime,
+    handleContentChange,
+    handleContentConflict,
+    resolveConflict
   };
 };
 
@@ -360,6 +514,13 @@ export const useRealTimeNotifications = () => {
   useEffect(() => {
     const unread = notifications.filter(n => !n.read).length;
     setUnreadCount(unread);
+    
+    // Update page title with unread count
+    if (unread > 0) {
+      document.title = `(${unread}) BLOGGY - Real-time Blogging Platform`;
+    } else {
+      document.title = 'BLOGGY - Real-time Blogging Platform';
+    }
   }, [notifications]);
 
   // Listen for real-time notifications
@@ -367,6 +528,7 @@ export const useRealTimeNotifications = () => {
     const handleRealtimeNotification = (event) => {
       const notification = event.detail;
       // Handle notification display logic here
+      console.log(`🔔 Real-time notification received:`, notification);
     };
 
     window.addEventListener('realtime-notification', handleRealtimeNotification);
@@ -380,6 +542,92 @@ export const useRealTimeNotifications = () => {
     notifications,
     unreadCount,
     markAsRead: markNotificationsAsRead,
-    sendNotification
+    sendNotification,
+    clearAll: () => setNotifications([])
+  };
+};
+
+// Enhanced hook for real-time content feed
+export const useRealTimeContentFeed = (userId, limit = 10) => {
+  const [feedItems, setFeedItems] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const [lastTimestamp, setLastTimestamp] = useState(null);
+  const [newContentCount, setNewContentCount] = useState(0);
+
+  // Load initial feed
+  useEffect(() => {
+    loadFeedItems(true);
+    setupFeedListeners();
+    
+    return () => {
+      socketService.removeAllListeners();
+    };
+  }, [userId]);
+
+  const loadFeedItems = async (isInitial = false) => {
+    try {
+      setLoading(true);
+      
+      const params = new URLSearchParams({
+        limit: limit.toString(),
+        ...(lastTimestamp && !isInitial && { lastTimestamp })
+      });
+      
+      const response = await apiService.get(`/api/realtime/user/${userId}/activity?${params}`);
+      const { blogs, hasMore: moreAvailable } = response.data;
+      
+      if (isInitial) {
+        setFeedItems(blogs);
+        setNewContentCount(0);
+      } else {
+        setFeedItems(prev => [...prev, ...blogs]);
+      }
+      
+      setHasMore(moreAvailable);
+      
+      if (blogs.length > 0) {
+        setLastTimestamp(blogs[blogs.length - 1].createdAt);
+      }
+    } catch (error) {
+      console.error('Error loading feed items:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const setupFeedListeners = () => {
+    // Listen for new blog posts
+    socketService.onNewBlog((data) => {
+      console.log(`📰 New blog in feed:`, data);
+      setNewContentCount(prev => prev + 1);
+    });
+
+    // Listen for blog updates
+    socketService.onBlogUpdated((data) => {
+      console.log(`📝 Blog updated in feed:`, data);
+      setFeedItems(prev => prev.map(item => 
+        item._id === data.blog._id ? { ...item, ...data.blog } : item
+      ));
+    });
+
+    // Listen for blog deletions
+    socketService.onBlogDeleted((data) => {
+      console.log(`🗑️ Blog deleted from feed:`, data);
+      setFeedItems(prev => prev.filter(item => item._id !== data.blogId));
+    });
+  };
+
+  const loadNewContent = () => {
+    loadFeedItems(true);
+  };
+
+  return {
+    feedItems,
+    loading,
+    hasMore,
+    newContentCount,
+    loadFeedItems,
+    loadNewContent
   };
 };
